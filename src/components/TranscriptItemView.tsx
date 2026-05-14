@@ -19,10 +19,16 @@ import { TodoPanel, parseTodos } from "./TodoPanel.js";
 
 export interface TranscriptItemViewProps {
   item: TranscriptItem;
+  /**
+   * When true, ToolCallView renders tool results in full. Otherwise results
+   * are truncated to 5 lines. Threaded through from CliArgs.fullToolOutput.
+   */
+  fullToolOutput?: boolean;
 }
 
 export function TranscriptItemView({
   item,
+  fullToolOutput = false,
 }: TranscriptItemViewProps): React.JSX.Element {
   switch (item.kind) {
     case "user":
@@ -48,7 +54,13 @@ export function TranscriptItemView({
                     return <TodoPanel key={c.invocationId} todos={todos} />;
                   }
                 }
-                return <ToolCallView key={c.invocationId} call={c} />;
+                return (
+                  <ToolCallView
+                    key={c.invocationId}
+                    call={c}
+                    fullOutput={fullToolOutput}
+                  />
+                );
               })}
             </Box>
           )}

@@ -19,6 +19,7 @@ function parseArgs(argv: string[]): CliArgs {
     bridgeBin: "oh",
     bridgeArgs: [],
     yolo: false,
+    fullToolOutput: false,
   };
   const rest: string[] = [];
 
@@ -42,6 +43,8 @@ function parseArgs(argv: string[]): CliArgs {
       args.bridgeBin = argv[++i] ?? "oh";
     } else if (a === "--yolo") {
       args.yolo = true;
+    } else if (a === "--full-tool-output") {
+      args.fullToolOutput = true;
     } else if (a === "--help" || a === "-h") {
       printHelp();
       process.exit(0);
@@ -74,6 +77,7 @@ Options:
   --framing F                  newline (default) | content-length
   --bridge-bin PATH            override path to the \`oh\` executable
   --yolo                       skip permission dialogs (auto-approve tools)
+  --full-tool-output           disable 5-line tool result truncation
   -h, --help                   show this help and exit
   --version                    print version and exit`);
 }

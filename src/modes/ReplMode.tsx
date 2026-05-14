@@ -564,9 +564,20 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
   return (
     <Box flexDirection="column">
       <Static items={completed}>
-        {(item) => <TranscriptItemView key={item.id} item={item} />}
+        {(item) => (
+          <TranscriptItemView
+            key={item.id}
+            item={item}
+            fullToolOutput={activeArgs.fullToolOutput}
+          />
+        )}
       </Static>
-      {active !== undefined && <TranscriptItemView item={active} />}
+      {active !== undefined && (
+        <TranscriptItemView
+          item={active}
+          fullToolOutput={activeArgs.fullToolOutput}
+        />
+      )}
       <Spinner active={waitingForFirstToken} />
       {permission !== null && (
         <PermissionDialog

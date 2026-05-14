@@ -276,7 +276,11 @@ export function OneShotMode({ args }: OneShotModeProps): React.JSX.Element {
   return (
     <Box flexDirection="column">
       {transcript.items.map((item) => (
-        <TranscriptItemView key={item.id} item={item} />
+        <TranscriptItemView
+          key={item.id}
+          item={item}
+          fullToolOutput={args.fullToolOutput}
+        />
       ))}
       <Spinner active={waitingForFirstToken} />
       {permission !== null && (

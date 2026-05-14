@@ -13,6 +13,12 @@ export interface CliArgs {
   bridgeBin: string;
   bridgeArgs: string[];
   yolo: boolean;
+  /**
+   * When true, tool results render in full; otherwise ToolCallView truncates
+   * them to the first 5 lines with a "… N more lines" suffix. Default false
+   * keeps the REPL readable on tools that dump kilobytes (e.g. `bash`).
+   */
+  fullToolOutput: boolean;
 }
 
 export type TranscriptItemKind = "user" | "assistant" | "system" | "tool_call";
