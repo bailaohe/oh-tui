@@ -7,6 +7,13 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
+## v0.3.1 — bug fix
+
+- **Fix `/exit` hang**: `cli.tsx` now awaits `inst.waitUntilExit()` and
+  drains the bridge subprocess via a module-level singleton (bounded 6s).
+  Before this fix, `/exit` would unmount the React tree but the bridge
+  child kept Node's event loop alive indefinitely.
+
 ## v0.3.0 — Session management + Agent visibility (Phase 13)
 
 **A-side — Session management:**
