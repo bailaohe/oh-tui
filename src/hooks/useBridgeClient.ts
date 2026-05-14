@@ -28,14 +28,29 @@ import {
   NewlineFraming,
   ContentLengthFraming,
   type Framing,
+  type InitializeResult,
 } from "@meta-harney/bridge-client";
 import type { CliArgs } from "../types.js";
 import { locateBridge } from "../lib/locate-bridge.js";
+
+/**
+ * Effective runtime selection as reported by the bridge in its initialize
+ * response. Lets callers (StatusBar) reflect smart-picked provider/model
+ * when the user didn't pass `--provider` / `--model` explicitly. Both
+ * fields are null when the bridge omits `runtime_info` (older servers) or
+ * the host didn't publish that field.
+ */
+export interface EffectiveRuntime {
+  provider: string | null;
+  model: string | null;
+}
 
 export interface UseBridgeClientResult {
   client: BridgeClient | null;
   error: Error | null;
   ready: boolean;
+  /** Latest effective runtime metadata; updates on mount + after restart. */
+  effective: EffectiveRuntime;
   /**
    * Swap the running bridge for a fresh one with `newArgs`. Returns the
    * newly-initialized `BridgeClient` on success so callers can immediately
@@ -62,7 +77,9 @@ function buildBridgeArgs(args: CliArgs): string[] {
   return a;
 }
 
-async function startClient(args: CliArgs): Promise<BridgeClient> {
+async function startClient(
+  args: CliArgs,
+): Promise<{ client: BridgeClient; init: InitializeResult }> {
   const framing: Framing =
     args.framing === "content-length"
       ? new ContentLengthFraming()
@@ -74,10 +91,17 @@ async function startClient(args: CliArgs): Promise<BridgeClient> {
   });
   const client = new BridgeClient({ transport });
   await client.start();
-  await client.initialize({
-    clientInfo: { name: "oh-tui", version: "0.3.0" },
+  const init = await client.initialize({
+    clientInfo: { name: "oh-tui", version: "0.3.3" },
   });
-  return client;
+  return { client, init };
+}
+
+function effectiveFrom(init: InitializeResult): EffectiveRuntime {
+  return {
+    provider: init.runtime_info?.provider ?? null,
+    model: init.runtime_info?.model ?? null,
+  };
 }
 
 // Module-level singleton so cli.tsx can await teardown after Ink exits.
@@ -113,6 +137,10 @@ export function useBridgeClient(args: CliArgs): UseBridgeClientResult {
   const [client, setClient] = useState<BridgeClient | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [ready, setReady] = useState(false);
+  const [effective, setEffective] = useState<EffectiveRuntime>({
+    provider: null,
+    model: null,
+  });
   // Latch to defeat React StrictMode's intentional double-invoke of effects:
   // we must not spawn the bridge subprocess twice.
   const startedRef = useRef(false);
@@ -126,7 +154,7 @@ export function useBridgeClient(args: CliArgs): UseBridgeClientResult {
 
     let mounted = true;
     startClient(args)
-      .then((c) => {
+      .then(({ client: c, init }) => {
         if (!mounted) {
           // Component unmounted before initialize resolved — drop the
           // freshly-started client on the floor.
@@ -136,6 +164,7 @@ export function useBridgeClient(args: CliArgs): UseBridgeClientResult {
         clientRef.current = c;
         _activeClient = c;
         setClient(c);
+        setEffective(effectiveFrom(init));
         setReady(true);
       })
       .catch((e: Error) => {
@@ -164,10 +193,11 @@ export function useBridgeClient(args: CliArgs): UseBridgeClientResult {
         await stopClient(oldClient);
       }
       try {
-        const newClient = await startClient(newArgs);
+        const { client: newClient, init } = await startClient(newArgs);
         clientRef.current = newClient;
         _activeClient = newClient;
         setClient(newClient);
+        setEffective(effectiveFrom(init));
         setError(null);
         setReady(true);
         return newClient;
@@ -179,5 +209,5 @@ export function useBridgeClient(args: CliArgs): UseBridgeClientResult {
     [],
   );
 
-  return { client, error, ready, restart };
+  return { client, error, ready, effective, restart };
 }

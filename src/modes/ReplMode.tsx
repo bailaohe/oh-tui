@@ -166,7 +166,7 @@ const PROFILE_OPTIONS: SelectOption[] = [
 ];
 
 export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
-  const { client, ready, error, restart } = useBridgeClient(args);
+  const { client, ready, error, effective, restart } = useBridgeClient(args);
   const transcript = useTranscript();
   const [history, setHistory] = useState<string[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -641,8 +641,8 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
         )}
       <PromptInput history={history} onSubmit={submit} />
       <StatusBar
-        provider={activeArgs.provider}
-        model={activeArgs.model}
+        provider={activeArgs.provider ?? effective.provider}
+        model={activeArgs.model ?? effective.model}
         profile={activeArgs.profile}
         sessionIdShort={sessionShort}
         yolo={activeArgs.yolo}

@@ -100,7 +100,7 @@ function eventResultText(e: StreamEventLike): string | undefined {
 const EXIT_HOLD_MS = 100;
 
 export function OneShotMode({ args }: OneShotModeProps): React.JSX.Element {
-  const { client, error, ready } = useBridgeClient(args);
+  const { client, error, ready, effective } = useBridgeClient(args);
   const transcript = useTranscript();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [permission, setPermission] = useState<PendingPermission | null>(null);
@@ -291,8 +291,8 @@ export function OneShotMode({ args }: OneShotModeProps): React.JSX.Element {
         />
       )}
       <StatusBar
-        provider={args.provider}
-        model={args.model}
+        provider={args.provider ?? effective.provider}
+        model={args.model ?? effective.model}
         profile={args.profile}
         sessionIdShort={sessionShort}
         yolo={args.yolo}
