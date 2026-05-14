@@ -7,6 +7,17 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
+## v0.2.0 — polish + bug fixes
+
+- Markdown rendering for assistant output (headings, lists, code blocks, bold/italic, inline code, links)
+- ↑/↓ to recall previous prompts; current draft preserved when navigating back
+- StatusBar at bottom showing provider/model/session/yolo + latest telemetry
+- ToolCallView: multi-line tool invocations with args + result snippet
+- Spinner during agent thinking
+- Ctrl+C: cancels inflight, double-tap (within 2s) to exit when idle
+- /sessions and /tools output now flows in the transcript, scrolls naturally
+- Internally: transcript model + Ink Static for finished history (performance + correctness)
+
 ## What it is
 
 `oh-tui` is the reference TUI built on top of
