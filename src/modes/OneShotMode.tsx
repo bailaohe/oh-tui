@@ -27,9 +27,13 @@
 import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import { Box, Text, useApp } from "ink";
-import type { SendMessageHandle } from "@meta-harney/bridge-client";
+import type {
+  PermissionDecision,
+  SendMessageHandle,
+} from "@meta-harney/bridge-client";
 import { useBridgeClient } from "../hooks/useBridgeClient.js";
 import { StreamingMessage } from "../components/StreamingMessage.js";
+import { PermissionDialog } from "../components/PermissionDialog.js";
 import {
   ToolUseBadge,
   type ToolBadgeStatus,
@@ -46,6 +50,17 @@ interface ToolBadgeState {
   args?: unknown;
   /** Engine-supplied id used to pair started/completed events. */
   invocationId?: string;
+}
+
+/**
+ * Pending permission prompt awaiting user input. `resolve` is the bridge
+ * `onPermissionRequest` promise resolver wrapped so the dialog can clear
+ * itself atomically with the decision callback.
+ */
+interface PendingPermission {
+  tool: string;
+  args: unknown;
+  resolve: (decision: PermissionDecision) => void;
 }
 
 /**
@@ -99,6 +114,7 @@ export function OneShotMode({ args }: OneShotModeProps): React.JSX.Element {
   const [finished, setFinished] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [runtimeError, setRuntimeError] = useState<Error | null>(null);
+  const [permission, setPermission] = useState<PendingPermission | null>(null);
   const app = useApp();
 
   // Guard against StrictMode's double-invoke spawning two send_message flows.
@@ -125,6 +141,25 @@ export function OneShotMode({ args }: OneShotModeProps): React.JSX.Element {
           role: "user",
           content: [{ type: "text", text: prompt }],
         });
+
+        // Route permission/request RPCs to the modal. Each request gets its
+        // own Promise; we surface (tool, args, resolve) into local state so
+        // <PermissionDialog> can render and answer it. The resolver wrapper
+        // clears the dialog atomically with the decision so a fast second
+        // request from the engine doesn't race against an unmount.
+        handle.onPermissionRequest(
+          (req) =>
+            new Promise((resolve) => {
+              setPermission({
+                tool: req.tool,
+                args: req.tool_args,
+                resolve: (decision) => {
+                  setPermission(null);
+                  resolve({ decision });
+                },
+              });
+            }),
+        );
 
         handle.onEvent((raw: unknown) => {
           if (raw === null || typeof raw !== "object") return;
@@ -244,6 +279,13 @@ export function OneShotMode({ args }: OneShotModeProps): React.JSX.Element {
             args={t.args}
           />
         ))}
+        {permission !== null && (
+          <PermissionDialog
+            tool={permission.tool}
+            args={permission.args}
+            onDecide={permission.resolve}
+          />
+        )}
         <StreamingMessage text={text} finished={finished} />
       </Box>
     </Box>
