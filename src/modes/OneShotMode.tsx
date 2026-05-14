@@ -27,11 +27,13 @@
 import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import { Box, Text, useApp } from "ink";
-import type {
-  PermissionDecision,
-  SendMessageHandle,
+import {
+  BridgeCancelled,
+  type PermissionDecision,
+  type SendMessageHandle,
 } from "@meta-harney/bridge-client";
 import { useBridgeClient } from "../hooks/useBridgeClient.js";
+import { useCancelBinding } from "../hooks/useKeybinds.js";
 import { StreamingMessage } from "../components/StreamingMessage.js";
 import { PermissionDialog } from "../components/PermissionDialog.js";
 import {
@@ -119,6 +121,21 @@ export function OneShotMode({ args }: OneShotModeProps): React.JSX.Element {
 
   // Guard against StrictMode's double-invoke spawning two send_message flows.
   const startedRef = useRef(false);
+  // Live send handle for Ctrl+C cancellation. Null before send and after
+  // `done` settles (or cancels). We use a ref so cancellation doesn't
+  // depend on the latest state snapshot.
+  const handleRef = useRef<SendMessageHandle | null>(null);
+
+  // Ctrl+C cancels the in-flight turn via `$/cancelRequest`. The bridge
+  // rejects `handle.done` with BridgeCancelled, which the effect treats as
+  // a clean exit (no error banner).
+  useCancelBinding(() => {
+    const h = handleRef.current;
+    if (h === null) return;
+    h.cancel().catch(() => {
+      /* cancel may race with normal completion — ignore */
+    });
+  });
 
   useEffect(() => {
     if (!ready || client === null) return;
@@ -141,6 +158,8 @@ export function OneShotMode({ args }: OneShotModeProps): React.JSX.Element {
           role: "user",
           content: [{ type: "text", text: prompt }],
         });
+        // Publish to the ref so `useCancelBinding` can target this send.
+        handleRef.current = handle;
 
         // Route permission/request RPCs to the modal. Each request gets its
         // own Promise; we surface (tool, args, resolve) into local state so
@@ -233,11 +252,26 @@ export function OneShotMode({ args }: OneShotModeProps): React.JSX.Element {
         }, EXIT_HOLD_MS);
       } catch (e) {
         if (cancelled) return;
+        // Ctrl+C → BridgeCancelled. Treat it as a clean exit: keep whatever
+        // streamed text and tool badges we already painted, drop the cursor
+        // via `finished`, and bail without an error banner.
+        if (e instanceof BridgeCancelled) {
+          setFinished(true);
+          setTimeout(() => {
+            if (!cancelled) app.exit();
+          }, EXIT_HOLD_MS);
+          return;
+        }
         setRuntimeError(e as Error);
         // Give the error one frame to paint, then bail.
         setTimeout(() => {
           if (!cancelled) app.exit();
         }, EXIT_HOLD_MS);
+      } finally {
+        // Drop the cancel target — either the send finished, errored, or
+        // was already cancelled. A stray Ctrl+C after this point becomes a
+        // no-op.
+        if (handleRef.current === handle) handleRef.current = null;
       }
     })();
 

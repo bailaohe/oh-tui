@@ -80,7 +80,11 @@ Options:
 
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
-  render(<App args={args} />);
+  // exitOnCtrlC=false lets `useCancelBinding` claim Ctrl+C so it can fire
+  // `$/cancelRequest` instead of nuking the process mid-stream. If no
+  // in-flight handle exists, modes still fall through to a normal exit
+  // (REPL via `/exit`, OneShot after `handle.done`).
+  render(<App args={args} />, { exitOnCtrlC: false });
 }
 
 main();

@@ -31,10 +31,15 @@
  */
 
 import type React from "react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Box, Text, useApp } from "ink";
-import type { PermissionDecision } from "@meta-harney/bridge-client";
+import {
+  BridgeCancelled,
+  type PermissionDecision,
+  type SendMessageHandle,
+} from "@meta-harney/bridge-client";
 import { useBridgeClient } from "../hooks/useBridgeClient.js";
+import { useCancelBinding } from "../hooks/useKeybinds.js";
 import { PromptInput } from "../components/PromptInput.js";
 import { PermissionDialog } from "../components/PermissionDialog.js";
 import { StreamingMessage } from "../components/StreamingMessage.js";
@@ -70,7 +75,24 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [permission, setPermission] = useState<PendingPermission | null>(null);
   const [runtimeError, setRuntimeError] = useState<Error | null>(null);
+  // Latest in-flight send handle, or null when no turn is streaming. We use
+  // a ref (not state) because Ctrl+C should fire against the freshest
+  // handle without forcing a re-render on every send/finish.
+  const handleRef = useRef<SendMessageHandle | null>(null);
   const app = useApp();
+
+  // Ctrl+C cancels the current turn via `$/cancelRequest`. When no turn is
+  // in flight, the keypress is a no-op (we deliberately don't exit the REPL
+  // — users have `/exit` for that). Cancellation rejects `handle.done` with
+  // BridgeCancelled, which the try/finally below already treats as a
+  // normal completion path.
+  useCancelBinding(() => {
+    const h = handleRef.current;
+    if (h === null) return;
+    h.cancel().catch(() => {
+      /* cancel may race with normal completion — ignore */
+    });
+  });
 
   if (error !== null) {
     return <Text color="red">error: {error.message}</Text>;
@@ -105,6 +127,9 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
     setTurns((prev) => [...prev, { prompt, response: "", done: false }]);
 
     void (async () => {
+      // Declared outside the try so the finally block can compare against
+      // the handle we published into `handleRef`.
+      let handle: SendMessageHandle | null = null;
       try {
         // Lazily create the session on the first real prompt. Subsequent
         // turns reuse the cached id.
@@ -115,10 +140,15 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
           setSessionId(sid);
         }
 
-        const handle = client.sendMessage(sid, {
+        handle = client.sendMessage(sid, {
           role: "user",
           content: [{ type: "text", text: prompt }],
         });
+        // Publish the live handle so `useCancelBinding` can target it. We
+        // overwrite unconditionally — only one turn is in flight at a time
+        // because PromptInput won't surface another submit until this
+        // closure's finally runs.
+        handleRef.current = handle;
 
         // Route permission/request RPCs to the modal. The resolver wrapper
         // clears the dialog atomically with the decision so a fast second
@@ -152,25 +182,37 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
 
         await handle.done;
       } catch (e) {
-        // Surface the error inline on the turn rather than nuking the REPL
-        // — a single failed send shouldn't kill the session.
-        setTurns((prev) =>
-          prev.map((t, i) =>
-            i === turnIdx
-              ? {
-                  ...t,
-                  response:
-                    t.response.length > 0
-                      ? `${t.response}\n[error] ${(e as Error).message}`
-                      : `[error] ${(e as Error).message}`,
-                }
-              : t,
-          ),
-        );
-        // Stash on the runtimeError state only if there's no session yet —
-        // that means session.create itself blew up and the REPL is unusable.
-        if (sessionId === null) setRuntimeError(e as Error);
+        // Ctrl+C cancellation is a normal completion path — keep whatever
+        // text streamed so far and let the finally block mark the turn
+        // done. We deliberately don't append an `[error]` line for these.
+        if (e instanceof BridgeCancelled) {
+          // no-op — turn already shows partial response; cursor will drop
+          // when `done` flips below.
+        } else {
+          // Surface the error inline on the turn rather than nuking the
+          // REPL — a single failed send shouldn't kill the session.
+          setTurns((prev) =>
+            prev.map((t, i) =>
+              i === turnIdx
+                ? {
+                    ...t,
+                    response:
+                      t.response.length > 0
+                        ? `${t.response}\n[error] ${(e as Error).message}`
+                        : `[error] ${(e as Error).message}`,
+                  }
+                : t,
+            ),
+          );
+          // Stash on the runtimeError state only if there's no session yet
+          // — that means session.create itself blew up and the REPL is
+          // unusable.
+          if (sessionId === null) setRuntimeError(e as Error);
+        }
       } finally {
+        // Clear the cancel target so a stray Ctrl+C after completion
+        // doesn't try to cancel a finished handle.
+        if (handleRef.current === handle) handleRef.current = null;
         setTurns((prev) =>
           prev.map((t, i) => (i === turnIdx ? { ...t, done: true } : t)),
         );
