@@ -5,6 +5,7 @@
  *   - headings (#/##/###) colored by level
  *   - code blocks (fenced, bordered, optional language label)
  *   - list items (-, *, +, "1.")
+ *   - blockquote (> text) with a ▎ glyph prefix
  *   - inline: bold, italic, inline code, link
  *
  * When `cursor` is true, a trailing ▍ glyph renders to signal an in-flight
@@ -66,6 +67,14 @@ function BlockRender({ tok }: { tok: Token }): React.JSX.Element {
     return (
       <Box>
         <Text color="cyan">{tok.marker} </Text>
+        <InlineRender tokens={tok.text} />
+      </Box>
+    );
+  }
+  if (tok.type === "blockquote") {
+    return (
+      <Box>
+        <Text color="cyan">▎ </Text>
         <InlineRender tokens={tok.text} />
       </Box>
     );

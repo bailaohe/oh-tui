@@ -22,4 +22,9 @@ describe("markdown tokenize", () => {
     const t = tokenize("hello **world** `x`");
     expect(t[0]?.type).toBe("paragraph");
   });
+
+  it("recognizes blockquote", () => {
+    const t = tokenize("> hello there");
+    expect(t[0]).toMatchObject({ type: "blockquote" });
+  });
 });

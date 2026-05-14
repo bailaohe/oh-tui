@@ -6,6 +6,7 @@
  *   - paragraph
  *   - list_item (-, *, +, "1.")
  *   - code_block (``` fenced, optional lang)
+ *   - blockquote (> text)
  *
  * Supported inline tokens:
  *   - text (plain)
@@ -22,7 +23,8 @@ export type Token =
   | { type: "heading"; level: 1 | 2 | 3; text: InlineToken[] }
   | { type: "paragraph"; text: InlineToken[] }
   | { type: "list_item"; marker: string; text: InlineToken[] }
-  | { type: "code_block"; lang: string | null; code: string };
+  | { type: "code_block"; lang: string | null; code: string }
+  | { type: "blockquote"; text: InlineToken[] };
 
 export type InlineToken =
   | { type: "text"; text: string }
@@ -82,6 +84,17 @@ export function tokenize(input: string): Token[] {
       continue;
     }
 
+    // Blockquote (single-line; multi-line quotes render as adjacent blocks)
+    const quoteMatch = /^>\s*(.+)$/.exec(line);
+    if (quoteMatch !== null) {
+      out.push({
+        type: "blockquote",
+        text: tokenizeInline(quoteMatch[1]!),
+      });
+      i += 1;
+      continue;
+    }
+
     // Blank line → skip
     if (line.trim() === "") {
       i += 1;
@@ -96,7 +109,8 @@ export function tokenize(input: string): Token[] {
       lines[i]!.trim() !== "" &&
       !/^(#{1,3})\s+/.test(lines[i]!) &&
       !/^\s*([-*+]|\d+\.)\s+/.test(lines[i]!) &&
-      !/^```/.test(lines[i]!)
+      !/^```/.test(lines[i]!) &&
+      !/^>\s+/.test(lines[i]!)
     ) {
       buf.push(lines[i]!);
       i += 1;
