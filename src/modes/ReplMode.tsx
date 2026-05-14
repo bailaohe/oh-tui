@@ -41,6 +41,7 @@ import { PermissionDialog } from "../components/PermissionDialog.js";
 import { Spinner } from "../components/Spinner.js";
 import { StatusBar } from "../components/StatusBar.js";
 import { TranscriptItemView } from "../components/TranscriptItemView.js";
+import { messagesToTranscript } from "../lib/replay.js";
 import type { CliArgs, TranscriptItem, ToolCallState } from "../types.js";
 
 export interface ReplModeProps {
@@ -169,6 +170,25 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
       // before the first message creates a session.
       if (prompt === "/exit" || prompt === "/quit") {
         app.exit();
+        return;
+      }
+      const resumeMatch = /^\/resume\s+(\S+)$/.exec(prompt);
+      if (resumeMatch !== null) {
+        const id = resumeMatch[1]!;
+        void (async () => {
+          try {
+            const session = await client.sessionLoad(id);
+            const items = messagesToTranscript(session.messages);
+            transcript.replayMessages(items);
+            setSessionId(session.id);
+            transcript.appendSystem(
+              "info",
+              `resumed session ${session.id.slice(0, 8)}…`,
+            );
+          } catch (e) {
+            transcript.appendSystem("error", (e as Error).message);
+          }
+        })();
         return;
       }
       if (prompt === "/sessions") {

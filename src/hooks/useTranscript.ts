@@ -96,6 +96,19 @@ export function useTranscript() {
     [],
   );
 
+  /**
+   * Replace the entire transcript with a pre-built list of items. Used when
+   * resuming a session: messagesToTranscript() produces the historical view
+   * and we drop it in wholesale so the next live turn appends as usual.
+   */
+  const replayMessages = useCallback((next: TranscriptItem[]): void => {
+    setItems(next);
+  }, []);
+
+  const clear = useCallback((): void => {
+    setItems([]);
+  }, []);
+
   return {
     items,
     itemsRef,
@@ -106,5 +119,7 @@ export function useTranscript() {
     updateToolCall,
     finishAssistant,
     appendSystem,
+    replayMessages,
+    clear,
   };
 }
