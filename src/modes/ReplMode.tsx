@@ -38,6 +38,10 @@ import { useCancelOrExit } from "../hooks/useKeybinds.js";
 import { useTranscript } from "../hooks/useTranscript.js";
 import { PromptInput } from "../components/PromptInput.js";
 import { PermissionDialog } from "../components/PermissionDialog.js";
+import {
+  SelectModal,
+  type SelectOption,
+} from "../components/SelectModal.js";
 import { Spinner } from "../components/Spinner.js";
 import { StatusBar } from "../components/StatusBar.js";
 import { TranscriptItemView } from "../components/TranscriptItemView.js";
@@ -122,6 +126,12 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
   } | null>(null);
   const [waitingForFirstToken, setWaitingForFirstToken] = useState(false);
   const [exitHintVisible, setExitHintVisible] = useState(false);
+  // /sessions modal: when non-null, renders a SelectModal whose options are
+  // built from the most recent `client.sessionList()` snapshot. `null` means
+  // "no modal up". Setting back to null both on select and on cancel.
+  const [sessionsModal, setSessionsModal] = useState<{
+    options: SelectOption[];
+  } | null>(null);
   // Force a re-render whenever the active turn switches in/out so the
   // Static/dynamic split below updates without waiting for an unrelated state
   // bump. Bumping `activeBump` is purely a re-render trigger.
@@ -195,7 +205,17 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
         void (async () => {
           try {
             const list = await client.sessionList();
-            transcript.appendSystem("sessions", list);
+            if (list.length === 0) {
+              transcript.appendSystem("info", "no sessions stored yet");
+              return;
+            }
+            setSessionsModal({
+              options: list.map((s) => ({
+                value: s.id,
+                label: `${s.id.slice(0, 12)}…`,
+                hint: `${s.message_count} msgs · ${s.created_at.slice(0, 19)}`,
+              })),
+            });
           } catch (e) {
             transcript.appendSystem("error", (e as Error).message);
           }
@@ -368,6 +388,20 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
           tool={permission.tool}
           args={permission.args}
           onDecide={permission.resolve}
+        />
+      )}
+      {sessionsModal !== null && (
+        <SelectModal
+          title="resume session"
+          options={sessionsModal.options}
+          onSelect={(id) => {
+            setSessionsModal(null);
+            // Reuse the /resume code path from Task 2 — submit() is wrapped
+            // in useCallback so calling it here from a closure captures the
+            // latest version.
+            submit(`/resume ${id}`);
+          }}
+          onCancel={() => setSessionsModal(null)}
         />
       )}
       <PromptInput history={history} onSubmit={submit} />
