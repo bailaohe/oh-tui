@@ -14,6 +14,7 @@ import type {
   ToolSpec,
 } from "../types.js";
 import { MarkdownText } from "./MarkdownText.js";
+import { ToolCallView } from "./ToolCallView.js";
 
 export interface TranscriptItemViewProps {
   item: TranscriptItem;
@@ -35,11 +36,8 @@ export function TranscriptItemView({
         <Box flexDirection="column">
           {item.toolCalls.length > 0 && (
             <Box flexDirection="column">
-              {/* T5 swaps these for ToolCallView */}
               {item.toolCalls.map((c) => (
-                <Text key={c.invocationId} dimColor>
-                  · {c.tool} {c.status}
-                </Text>
+                <ToolCallView key={c.invocationId} call={c} />
               ))}
             </Box>
           )}
