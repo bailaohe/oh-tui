@@ -293,6 +293,7 @@ export function OneShotMode({ args }: OneShotModeProps): React.JSX.Element {
       <StatusBar
         provider={args.provider}
         model={args.model}
+        profile={args.profile}
         sessionIdShort={sessionShort}
         yolo={args.yolo}
         telemetry={telemetry}

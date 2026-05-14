@@ -643,6 +643,7 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
       <StatusBar
         provider={activeArgs.provider}
         model={activeArgs.model}
+        profile={activeArgs.profile}
         sessionIdShort={sessionShort}
         yolo={activeArgs.yolo}
         telemetry={telemetry}
