@@ -9,13 +9,14 @@ module.exports = {
     tsconfigRootDir: __dirname,
     ecmaFeatures: { jsx: true },
   },
-  plugins: ["@typescript-eslint", "react"],
+  plugins: ["@typescript-eslint", "react", "react-hooks"],
   extends: [
     "eslint:recommended",
     "plugin:@typescript-eslint/recommended",
     "plugin:@typescript-eslint/recommended-requiring-type-checking",
     "plugin:react/recommended",
     "plugin:react/jsx-runtime",
+    "plugin:react-hooks/recommended",
   ],
   settings: {
     react: { version: "detect" },
