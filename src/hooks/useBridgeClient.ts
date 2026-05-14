@@ -36,7 +36,14 @@ export interface UseBridgeClientResult {
   client: BridgeClient | null;
   error: Error | null;
   ready: boolean;
-  restart: (newArgs: CliArgs) => Promise<void>;
+  /**
+   * Swap the running bridge for a fresh one with `newArgs`. Returns the
+   * newly-initialized `BridgeClient` on success so callers can immediately
+   * issue RPCs (e.g. `sessionLoad`) without waiting for the next render to
+   * pick up the updated `client` state. Rejects if the new bridge fails to
+   * start; in that case the hook's `error` is also set.
+   */
+  restart: (newArgs: CliArgs) => Promise<BridgeClient>;
 }
 
 // Translate CliArgs into the argv we pass to `oh bridge`. We always
@@ -133,24 +140,29 @@ export function useBridgeClient(args: CliArgs): UseBridgeClientResult {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const restart = useCallback(async (newArgs: CliArgs): Promise<void> => {
-    setReady(false);
-    const oldClient = clientRef.current;
-    clientRef.current = null;
-    setClient(null);
-    if (oldClient !== null) {
-      await stopClient(oldClient);
-    }
-    try {
-      const newClient = await startClient(newArgs);
-      clientRef.current = newClient;
-      setClient(newClient);
-      setError(null);
-      setReady(true);
-    } catch (e) {
-      setError(e as Error);
-    }
-  }, []);
+  const restart = useCallback(
+    async (newArgs: CliArgs): Promise<BridgeClient> => {
+      setReady(false);
+      const oldClient = clientRef.current;
+      clientRef.current = null;
+      setClient(null);
+      if (oldClient !== null) {
+        await stopClient(oldClient);
+      }
+      try {
+        const newClient = await startClient(newArgs);
+        clientRef.current = newClient;
+        setClient(newClient);
+        setError(null);
+        setReady(true);
+        return newClient;
+      } catch (e) {
+        setError(e as Error);
+        throw e as Error;
+      }
+    },
+    [],
+  );
 
   return { client, error, ready, restart };
 }

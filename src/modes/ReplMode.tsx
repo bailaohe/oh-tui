@@ -113,8 +113,60 @@ function eventResultText(e: StreamEventLike): string | undefined {
   return undefined;
 }
 
+/**
+ * Catalog of provider choices for `/provider`. Hints reflect the meta-harney
+ * ProviderSpec catalog's default model; pickers display them so users see what
+ * they'll get if they don't subsequently `/model`-switch.
+ */
+const PROVIDER_OPTIONS: SelectOption[] = [
+  { value: "anthropic", label: "anthropic", hint: "claude-sonnet-4-5" },
+  { value: "openai", label: "openai", hint: "gpt-4o" },
+  { value: "deepseek", label: "deepseek", hint: "deepseek-chat" },
+  { value: "moonshot", label: "moonshot", hint: "kimi-k2-0905-preview" },
+  { value: "gemini", label: "gemini", hint: "gemini-2.0-flash" },
+  { value: "minimax", label: "minimax", hint: "MiniMax-M2" },
+  { value: "nvidia", label: "nvidia", hint: "meta/llama-3.1-405b" },
+  { value: "dashscope", label: "dashscope", hint: "qwen-max" },
+  { value: "modelscope", label: "modelscope", hint: "Qwen2.5-72B" },
+];
+
+/**
+ * Hardcoded per-provider model catalog mirroring meta-harney's ProviderSpec.
+ * Kept in this file (not imported) so swapping the bridge binary doesn't break
+ * the picker — the cost is occasional drift, which we accept for v1.
+ */
+const MODEL_OPTIONS: Record<string, string[]> = {
+  anthropic: [
+    "claude-sonnet-4-5",
+    "claude-opus-4-5",
+    "claude-haiku-4-5",
+  ],
+  openai: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
+  deepseek: ["deepseek-chat", "deepseek-reasoner"],
+  moonshot: ["kimi-k2-0905-preview"],
+  gemini: ["gemini-2.0-flash", "gemini-1.5-pro"],
+  minimax: ["MiniMax-M2"],
+  nvidia: ["meta/llama-3.1-405b-instruct"],
+  dashscope: ["qwen-max", "qwen-plus", "qwen-turbo"],
+  modelscope: ["Qwen2.5-72B-Instruct"],
+};
+
+/**
+ * Profile choices for v1. The bridge expects profiles to already be configured
+ * via `oh auth login --profile <name>`; we can't currently enumerate them
+ * remotely, so we offer the two most common slots as a guided shortcut.
+ */
+const PROFILE_OPTIONS: SelectOption[] = [
+  { value: "default", label: "default" },
+  {
+    value: "work",
+    label: "work",
+    hint: "requires `oh auth login --profile work`",
+  },
+];
+
 export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
-  const { client, ready, error } = useBridgeClient(args);
+  const { client, ready, error, restart } = useBridgeClient(args);
   const transcript = useTranscript();
   const [history, setHistory] = useState<string[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -132,6 +184,21 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
   const [sessionsModal, setSessionsModal] = useState<{
     options: SelectOption[];
   } | null>(null);
+  // Live mirror of the CliArgs that were used to spawn the *current* bridge.
+  // Mutated by `/provider`, `/model`, `/profile` flows so subsequent switches
+  // compose on top of the most recent state rather than the original argv.
+  const [activeArgs, setActiveArgs] = useState<CliArgs>(args);
+  // Provider/model/profile pickers — at most one is non-null at a time. The
+  // JSX renders the first one that's set; the others stay hidden. Combined
+  // with the existing permission + sessions modals, this gives us a 5-way
+  // mutex enforced declaratively in the render block.
+  const [providerModal, setProviderModal] = useState<SelectOption[] | null>(
+    null,
+  );
+  const [modelModal, setModelModal] = useState<SelectOption[] | null>(null);
+  const [profileModal, setProfileModal] = useState<SelectOption[] | null>(
+    null,
+  );
   // Force a re-render whenever the active turn switches in/out so the
   // Static/dynamic split below updates without waiting for an unrelated state
   // bump. Bumping `activeBump` is purely a re-render trigger.
@@ -231,6 +298,33 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
             transcript.appendSystem("error", (e as Error).message);
           }
         })();
+        return;
+      }
+      if (prompt === "/provider") {
+        setProviderModal(PROVIDER_OPTIONS);
+        return;
+      }
+      if (prompt === "/model") {
+        // The picker keys off `activeArgs.provider` (not the original `args`)
+        // so a sequence like `/provider deepseek` then `/model` shows the
+        // right list. Fall back to "anthropic" when no provider was pinned —
+        // matches the bridge's own default.
+        const provider = activeArgs.provider ?? "anthropic";
+        const models = MODEL_OPTIONS[provider] ?? [];
+        if (models.length === 0) {
+          transcript.appendSystem(
+            "info",
+            `no known models for ${provider}; use --model <name> at launch`,
+          );
+          return;
+        }
+        setModelModal(
+          models.map((m) => ({ value: m, label: m })),
+        );
+        return;
+      }
+      if (prompt === "/profile") {
+        setProfileModal(PROFILE_OPTIONS);
         return;
       }
       if (prompt.trim() === "") return;
@@ -338,7 +432,98 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
         }
       })();
     },
-    [client, sessionId, transcript, app],
+    [client, sessionId, transcript, app, activeArgs],
+  );
+
+  /**
+   * Shared body for `/provider`, `/model`, `/profile` switches.
+   *
+   * The flow:
+   *   1. Cancel any inflight send so the about-to-be-killed bridge doesn't
+   *      leave a dangling permission/stream promise on our side. We swallow
+   *      the cancel error: if the handle was never started or already done,
+   *      `.cancel()` returns rejected and we don't care.
+   *   2. Surface a "switching to X…" info line so the user sees something
+   *      happen between the picker dismissing and `ready` flipping false.
+   *   3. Build `next` by merging the partial patch over `activeArgs`. We store
+   *      it on state so future switches compose, and pass it directly to
+   *      `restart()` since the state setter is async.
+   *   4. `restart()` returns the newly-initialized `BridgeClient` so we can
+   *      issue the session-reload RPC without waiting for the React render
+   *      that picks up the new client. This sidesteps the stale-closure
+   *      problem entirely.
+   *   5. Replay messages into the transcript so the conversation visibly
+   *      continues. Any inflight assistant turn is gone by now (we cancelled
+   *      it and the bridge that was streaming it is dead), so this is safe.
+   */
+  const performSwitch = useCallback(
+    async (
+      patch: Partial<CliArgs>,
+      label: string,
+    ): Promise<void> => {
+      handleRef.current?.cancel().catch(() => {
+        /* nothing to cancel, or already cancelled — both fine */
+      });
+      transcript.appendSystem("info", `switching to ${label}…`);
+      const next: CliArgs = { ...activeArgs, ...patch };
+      setActiveArgs(next);
+      try {
+        const newClient = await restart(next);
+        if (sessionId !== null) {
+          try {
+            const session = await newClient.sessionLoad(sessionId);
+            transcript.replayMessages(messagesToTranscript(session.messages));
+            transcript.appendSystem(
+              "info",
+              `session ${session.id.slice(0, 8)}… reloaded`,
+            );
+          } catch (e) {
+            // Session-load failure is non-fatal — the bridge is alive, the
+            // user can still type. Surface the error so they know history
+            // didn't carry over.
+            transcript.appendSystem(
+              "error",
+              `session reload failed: ${(e as Error).message}`,
+            );
+          }
+        }
+      } catch (e) {
+        transcript.appendSystem("error", (e as Error).message);
+      }
+    },
+    [activeArgs, restart, sessionId, transcript],
+  );
+
+  const handleSwitchProvider = useCallback(
+    (newProvider: string): void => {
+      setProviderModal(null);
+      // Clearing `model` on provider switch avoids passing a model name the
+      // new provider doesn't recognize. The user can `/model` afterwards.
+      void performSwitch(
+        { provider: newProvider, model: null },
+        `provider ${newProvider}`,
+      );
+    },
+    [performSwitch],
+  );
+
+  const handleSwitchModel = useCallback(
+    (newModel: string): void => {
+      setModelModal(null);
+      void performSwitch({ model: newModel }, `model ${newModel}`);
+    },
+    [performSwitch],
+  );
+
+  const handleSwitchProfile = useCallback(
+    (newProfile: string): void => {
+      setProfileModal(null);
+      void performSwitch(
+        { profile: newProfile },
+        `profile ${newProfile}`,
+      );
+    },
+    [performSwitch],
   );
 
   if (error !== null) {
@@ -390,7 +575,13 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
           onDecide={permission.resolve}
         />
       )}
-      {sessionsModal !== null && (
+      {/* Modal mutex: at most one of permission / sessions / provider /
+          model / profile is visible at a time. The order below is also the
+          precedence — permission has the strongest claim because it blocks
+          tool execution; the slash-command pickers are mutually exclusive
+          via their state being driven only by `submit`, but we guard each
+          branch defensively in case future code paths open two at once. */}
+      {permission === null && sessionsModal !== null && (
         <SelectModal
           title="resume session"
           options={sessionsModal.options}
@@ -404,12 +595,45 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
           onCancel={() => setSessionsModal(null)}
         />
       )}
+      {permission === null &&
+        sessionsModal === null &&
+        providerModal !== null && (
+          <SelectModal
+            title="switch provider"
+            options={providerModal}
+            onSelect={handleSwitchProvider}
+            onCancel={() => setProviderModal(null)}
+          />
+        )}
+      {permission === null &&
+        sessionsModal === null &&
+        providerModal === null &&
+        modelModal !== null && (
+          <SelectModal
+            title="switch model"
+            options={modelModal}
+            onSelect={handleSwitchModel}
+            onCancel={() => setModelModal(null)}
+          />
+        )}
+      {permission === null &&
+        sessionsModal === null &&
+        providerModal === null &&
+        modelModal === null &&
+        profileModal !== null && (
+          <SelectModal
+            title="switch profile"
+            options={profileModal}
+            onSelect={handleSwitchProfile}
+            onCancel={() => setProfileModal(null)}
+          />
+        )}
       <PromptInput history={history} onSubmit={submit} />
       <StatusBar
-        provider={args.provider}
-        model={args.model}
+        provider={activeArgs.provider}
+        model={activeArgs.model}
         sessionIdShort={sessionShort}
-        yolo={args.yolo}
+        yolo={activeArgs.yolo}
         telemetry={telemetry}
         cancelHint={cancelHint}
       />
