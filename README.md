@@ -7,6 +7,26 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
+## v0.3.0 — Session management + Agent visibility (Phase 13)
+
+**A-side — Session management:**
+
+- `/resume <id>` — replay a past session by id (via `session.load`)
+- `/sessions` — opens a selectable modal listing past sessions; pick one to load
+- `/provider <name>` / `/model <id>` / `/profile <name>` — switch on the fly via a `SelectModal`; bridge restarts with the new config and the current session is preserved
+- `SelectModal` — arrow-key picker reused across pickers, `Esc` to cancel
+
+**B-side — Agent visibility:**
+
+- `TodoPanel` — renders `todo_write` tool calls as a live plan with status icons
+- Tool result truncation — long tool outputs collapse to 5 lines by default; pass `--full-tool-output` to disable
+- Markdown rendering — added blockquote (`> text`) support to `MarkdownText`
+
+**Other:**
+
+- Mid-session bridge swap via `useBridgeClient.restart`
+- 19 component/unit tests covering the new surfaces
+
 ## v0.2.0 — polish + bug fixes
 
 - Markdown rendering for assistant output (headings, lists, code blocks, bold/italic, inline code, links)
