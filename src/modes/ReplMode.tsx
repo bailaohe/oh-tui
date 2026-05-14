@@ -37,12 +37,16 @@ import {
   BridgeCancelled,
   type PermissionDecision,
   type SendMessageHandle,
+  type SessionListEntry,
+  type ToolSpec,
 } from "@meta-harney/bridge-client";
 import { useBridgeClient } from "../hooks/useBridgeClient.js";
 import { useCancelBinding } from "../hooks/useKeybinds.js";
 import { PromptInput } from "../components/PromptInput.js";
 import { PermissionDialog } from "../components/PermissionDialog.js";
+import { SessionListPanel } from "../components/SessionListPanel.js";
 import { StreamingMessage } from "../components/StreamingMessage.js";
+import { ToolsListPanel } from "../components/ToolsListPanel.js";
 import type { CliArgs } from "../types.js";
 
 export interface ReplModeProps {
@@ -75,6 +79,16 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [permission, setPermission] = useState<PendingPermission | null>(null);
   const [runtimeError, setRuntimeError] = useState<Error | null>(null);
+  // Side-panel state. Each panel toggles via its slash-command: first
+  // invocation fetches data + makes the panel visible, second invocation
+  // hides it (we keep the cached data on the first toggle-off so re-opening
+  // is instant; a third toggle refreshes). Mutual exclusivity isn't enforced
+  // — both panels can be visible simultaneously, which keeps the UX
+  // predictable (each command only touches its own state).
+  const [sessions, setSessions] = useState<SessionListEntry[]>([]);
+  const [sessionsVisible, setSessionsVisible] = useState(false);
+  const [tools, setTools] = useState<ToolSpec[]>([]);
+  const [toolsVisible, setToolsVisible] = useState(false);
   // Latest in-flight send handle, or null when no turn is streaming. We use
   // a ref (not state) because Ctrl+C should fire against the freshest
   // handle without forcing a re-render on every send/finish.
@@ -109,6 +123,43 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
     // before the first message creates a session.
     if (prompt === "/exit" || prompt === "/quit") {
       app.exit();
+      return;
+    }
+    // Side-panel toggles. Each command is its own toggle:
+    //   - visible → hide (cheap, no RPC)
+    //   - hidden  → fetch fresh data then show
+    // Errors are surfaced via runtimeError so a transient RPC failure
+    // doesn't silently swallow the user's command.
+    if (prompt === "/sessions") {
+      if (sessionsVisible) {
+        setSessionsVisible(false);
+      } else {
+        void (async () => {
+          try {
+            const list = await client.sessionList();
+            setSessions(list);
+            setSessionsVisible(true);
+          } catch (e) {
+            setRuntimeError(e as Error);
+          }
+        })();
+      }
+      return;
+    }
+    if (prompt === "/tools") {
+      if (toolsVisible) {
+        setToolsVisible(false);
+      } else {
+        void (async () => {
+          try {
+            const list = await client.toolsList();
+            setTools(list);
+            setToolsVisible(true);
+          } catch (e) {
+            setRuntimeError(e as Error);
+          }
+        })();
+      }
       return;
     }
     if (prompt.trim() === "") {
@@ -239,6 +290,11 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
           onDecide={permission.resolve}
         />
       )}
+      {/* Side panels are informational, not modal — they sit above the
+          prompt so the user can keep typing without losing focus, and a
+          repeat of the same slash-command toggles them away. */}
+      {sessionsVisible && <SessionListPanel sessions={sessions} />}
+      {toolsVisible && <ToolsListPanel tools={tools} />}
       <PromptInput history={history} onSubmit={onSubmit} />
     </Box>
   );
