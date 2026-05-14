@@ -15,6 +15,7 @@ import type {
 } from "../types.js";
 import { MarkdownText } from "./MarkdownText.js";
 import { ToolCallView } from "./ToolCallView.js";
+import { TodoPanel, parseTodos } from "./TodoPanel.js";
 
 export interface TranscriptItemViewProps {
   item: TranscriptItem;
@@ -36,9 +37,19 @@ export function TranscriptItemView({
         <Box flexDirection="column">
           {item.toolCalls.length > 0 && (
             <Box flexDirection="column">
-              {item.toolCalls.map((c) => (
-                <ToolCallView key={c.invocationId} call={c} />
-              ))}
+              {item.toolCalls.map((c) => {
+                // todo_write surfaces as a structured plan; intercept it here
+                // so the user sees the plan-of-record block instead of a
+                // generic tool call. parseTodos returns null on malformed
+                // payloads, in which case we fall through to ToolCallView.
+                if (c.tool === "todo_write") {
+                  const todos = parseTodos(c.args);
+                  if (todos !== null) {
+                    return <TodoPanel key={c.invocationId} todos={todos} />;
+                  }
+                }
+                return <ToolCallView key={c.invocationId} call={c} />;
+              })}
             </Box>
           )}
           <MarkdownText source={item.text} cursor={!item.done} />
