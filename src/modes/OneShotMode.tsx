@@ -1,27 +1,22 @@
 /**
- * OneShotMode — fire-and-exit flow for `oh-tui "<prompt>"`.
+ * OneShotMode — fire-and-exit flow for `oh-tui "<prompt>"` (Phase 12 rewrite).
  *
- * Lifecycle:
- *   1. `useBridgeClient` spawns the bridge + initializes; we wait for `ready`.
- *   2. Create a fresh session via `session.create` and remember its id.
- *   3. Send the user prompt with `session.send_message` and subscribe to the
- *      returned handle's stream events.
- *   4. Translate wire events into UI state:
- *        - `text_delta`           → append to streaming text buffer
- *        - `tool_call_started`    → push a "running" ToolUseBadge
- *        - `tool_call_completed`  → flip matching badge to "done" / "error"
- *      We accept legacy `tool_use` / `tool_result` aliases too, because the
- *      project plan template names them that way and a future protocol
- *      revision might rename engine events to match.
- *   5. When `handle.done` resolves, mark finished and schedule `app.exit()`
- *      after a short visual hold so the user sees the completed state
- *      (cursor goes away, last badge flips to ✓) before the screen tears
- *      down. The bridge subprocess is still torn down cleanly by the
- *      `useBridgeClient` unmount path.
+ * Mirrors the ReplMode rewrite but with a single turn:
+ *   - One user item, one assistant item; no PromptInput, no history.
+ *   - Uses `useCancelBinding` (NOT `useCancelOrExit`) — there's no exit dance
+ *     because the mode auto-exits after `handle.done` settles. A single
+ *     Ctrl+C cancels the inflight send; if pressed after completion it's a
+ *     no-op (the ref is null).
+ *   - Uses the transcript model + <TranscriptItemView> so MarkdownText,
+ *     <ToolCallView>, and system-block rendering stay consistent between modes.
+ *   - <Spinner> shows between submit and the first `text_delta`.
+ *   - <StatusBar> at the bottom mirrors the REPL footer (provider/model/
+ *     session/yolo + telemetry).
+ *   - `app.exit()` fires in `finally` after a short hold so the user can see
+ *     the final frame (cursor gone, last badge flipped to ✓/✗).
  *
  * StrictMode: an outer ref-latch guards the send pipeline so the effect
- * doesn't fire twice in dev. (`useBridgeClient` has its own latch for the
- * subprocess; this one is for the send_message we'd otherwise duplicate.)
+ * doesn't fire twice in dev.
  */
 
 import type React from "react";
@@ -34,64 +29,43 @@ import {
 } from "@meta-harney/bridge-client";
 import { useBridgeClient } from "../hooks/useBridgeClient.js";
 import { useCancelBinding } from "../hooks/useKeybinds.js";
-import { StreamingMessage } from "../components/StreamingMessage.js";
+import { useTranscript } from "../hooks/useTranscript.js";
 import { PermissionDialog } from "../components/PermissionDialog.js";
-import {
-  ToolUseBadge,
-  type ToolBadgeStatus,
-} from "../components/ToolUseBadge.js";
-import type { CliArgs } from "../types.js";
+import { Spinner } from "../components/Spinner.js";
+import { StatusBar } from "../components/StatusBar.js";
+import { TranscriptItemView } from "../components/TranscriptItemView.js";
+import type { CliArgs, ToolCallState } from "../types.js";
 
 export interface OneShotModeProps {
   args: CliArgs;
 }
 
-interface ToolBadgeState {
-  tool: string;
-  status: ToolBadgeStatus;
-  args?: unknown;
-  /** Engine-supplied id used to pair started/completed events. */
-  invocationId?: string;
-}
-
-/**
- * Pending permission prompt awaiting user input. `resolve` is the bridge
- * `onPermissionRequest` promise resolver wrapped so the dialog can clear
- * itself atomically with the decision callback.
- */
 interface PendingPermission {
   tool: string;
   args: unknown;
   resolve: (decision: PermissionDecision) => void;
 }
 
-/**
- * Loosely typed StreamEvent — the bridge serializes pydantic events
- * verbatim, so we duck-type the fields we actually consume.
- */
+/** Duck-typed StreamEvent — mirrors ReplMode. */
 interface StreamEventLike {
   kind?: string;
   text?: string;
-  // tool_call_started / tool_use variants
-  tool_name?: string;
   tool?: string;
+  tool_name?: string;
   invocation_id?: string;
+  invocationId?: string;
   args?: unknown;
-  // tool_call_completed / tool_result variants
-  result?: { is_error?: boolean } | unknown;
+  result?: unknown;
   error?: unknown;
   is_error?: boolean;
 }
 
-const TEXT_DELTA_KINDS = new Set(["text_delta"]);
-const TOOL_STARTED_KINDS = new Set(["tool_call_started", "tool_use"]);
-const TOOL_COMPLETED_KINDS = new Set(["tool_call_completed", "tool_result"]);
-
-/** Visual hold so the final frame is observable before Ink unmounts. */
-const EXIT_HOLD_MS = 100;
-
 function eventToolName(e: StreamEventLike): string {
-  return e.tool_name ?? e.tool ?? "?";
+  return e.tool_name ?? e.tool ?? "tool";
+}
+
+function eventInvocationId(e: StreamEventLike): string | undefined {
+  return e.invocationId ?? e.invocation_id;
 }
 
 function eventIsError(e: StreamEventLike): boolean {
@@ -109,26 +83,41 @@ function eventIsError(e: StreamEventLike): boolean {
   return false;
 }
 
+function eventResultText(e: StreamEventLike): string | undefined {
+  const r = e.result;
+  if (typeof r === "string") return r;
+  if (r !== undefined && r !== null && typeof r === "object") {
+    try {
+      return JSON.stringify(r);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+/** Visual hold so the final frame is observable before Ink unmounts. */
+const EXIT_HOLD_MS = 100;
+
 export function OneShotMode({ args }: OneShotModeProps): React.JSX.Element {
   const { client, error, ready } = useBridgeClient(args);
-  const [text, setText] = useState("");
-  const [tools, setTools] = useState<ToolBadgeState[]>([]);
-  const [finished, setFinished] = useState(false);
+  const transcript = useTranscript();
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [runtimeError, setRuntimeError] = useState<Error | null>(null);
   const [permission, setPermission] = useState<PendingPermission | null>(null);
-  const app = useApp();
+  const [runtimeError, setRuntimeError] = useState<Error | null>(null);
+  const [telemetry, setTelemetry] = useState<{
+    event_type: string;
+    elapsed_ms: number;
+  } | null>(null);
+  const [waitingForFirstToken, setWaitingForFirstToken] = useState(false);
 
   // Guard against StrictMode's double-invoke spawning two send_message flows.
   const startedRef = useRef(false);
   // Live send handle for Ctrl+C cancellation. Null before send and after
-  // `done` settles (or cancels). We use a ref so cancellation doesn't
-  // depend on the latest state snapshot.
+  // `done` settles (or cancels).
   const handleRef = useRef<SendMessageHandle | null>(null);
+  const app = useApp();
 
-  // Ctrl+C cancels the in-flight turn via `$/cancelRequest`. The bridge
-  // rejects `handle.done` with BridgeCancelled, which the effect treats as
-  // a clean exit (no error banner).
   useCancelBinding(() => {
     const h = handleRef.current;
     if (h === null) return;
@@ -136,6 +125,25 @@ export function OneShotMode({ args }: OneShotModeProps): React.JSX.Element {
       /* cancel may race with normal completion — ignore */
     });
   });
+
+  // Subscribe to bridge telemetry — same shape as ReplMode.
+  useEffect(() => {
+    if (client === null) return;
+    client.onTelemetry((ev) => {
+      const payload = ev.payload as { duration_ms?: number } | null;
+      const elapsed =
+        payload !== null && typeof payload.duration_ms === "number"
+          ? payload.duration_ms
+          : 0;
+      setTelemetry({
+        event_type: ev.event_type,
+        elapsed_ms: Math.round(elapsed),
+      });
+    });
+    void client.telemetrySubscribe(true).catch(() => {
+      /* non-fatal */
+    });
+  }, [client]);
 
   useEffect(() => {
     if (!ready || client === null) return;
@@ -146,26 +154,24 @@ export function OneShotMode({ args }: OneShotModeProps): React.JSX.Element {
     let cancelled = false;
     let handle: SendMessageHandle | null = null;
 
+    // Seed the transcript with the user prompt + an empty assistant turn.
+    const prompt = args.prompt;
+    transcript.appendUser(prompt);
+    const assistantId = transcript.appendAssistant();
+    setWaitingForFirstToken(true);
+
     void (async () => {
       try {
         const summary = await client.sessionCreate();
         if (cancelled) return;
         setSessionId(summary.id);
 
-        // `prompt` is non-null here per the early return above; assert for TS.
-        const prompt = args.prompt as string;
         handle = client.sendMessage(summary.id, {
           role: "user",
           content: [{ type: "text", text: prompt }],
         });
-        // Publish to the ref so `useCancelBinding` can target this send.
         handleRef.current = handle;
 
-        // Route permission/request RPCs to the modal. Each request gets its
-        // own Promise; we surface (tool, args, resolve) into local state so
-        // <PermissionDialog> can render and answer it. The resolver wrapper
-        // clears the dialog atomically with the decision so a fast second
-        // request from the engine doesn't race against an unmount.
         handle.onPermissionRequest(
           (req) =>
             new Promise((resolve) => {
@@ -183,95 +189,62 @@ export function OneShotMode({ args }: OneShotModeProps): React.JSX.Element {
         handle.onEvent((raw: unknown) => {
           if (raw === null || typeof raw !== "object") return;
           const ev = raw as StreamEventLike;
-          const kind = ev.kind;
-          if (kind === undefined) return;
+          const kind = ev.kind ?? "";
 
-          if (TEXT_DELTA_KINDS.has(kind)) {
+          if (kind === "text_delta") {
             const chunk = typeof ev.text === "string" ? ev.text : "";
-            if (chunk.length > 0) setText((t) => t + chunk);
+            if (chunk.length === 0) return;
+            setWaitingForFirstToken(false);
+            transcript.appendToken(assistantId, chunk);
             return;
           }
 
-          if (TOOL_STARTED_KINDS.has(kind)) {
-            // Build the entry conditionally so we don't set
-            // `invocationId: undefined` under exactOptionalPropertyTypes.
-            const entry: ToolBadgeState = {
+          if (kind === "tool_call_started" || kind === "tool_use") {
+            setWaitingForFirstToken(false);
+            const invocationId =
+              eventInvocationId(ev) ??
+              `inv-${Math.random().toString(36).slice(2)}`;
+            const call: ToolCallState = {
+              invocationId,
               tool: eventToolName(ev),
+              args: ev.args ?? null,
               status: "running",
-              args: ev.args,
-              ...(typeof ev.invocation_id === "string"
-                ? { invocationId: ev.invocation_id }
-                : {}),
             };
-            setTools((prev) => [...prev, entry]);
+            transcript.appendToolCall(assistantId, call);
             return;
           }
 
-          if (TOOL_COMPLETED_KINDS.has(kind)) {
-            const nextStatus: ToolBadgeStatus = eventIsError(ev)
-              ? "error"
-              : "done";
-            const invId = ev.invocation_id;
-            setTools((prev) => {
-              // Prefer matching by invocation_id when available; fall back to
-              // the most recently added running badge so a missing id (e.g.
-              // legacy `tool_use`/`tool_result` pair) still closes correctly.
-              let matchIdx = -1;
-              if (invId !== undefined) {
-                matchIdx = prev.findIndex(
-                  (t) => t.invocationId === invId && t.status === "running",
-                );
-              }
-              if (matchIdx === -1) {
-                for (let i = prev.length - 1; i >= 0; i--) {
-                  const candidate = prev[i];
-                  if (candidate !== undefined && candidate.status === "running") {
-                    matchIdx = i;
-                    break;
-                  }
-                }
-              }
-              if (matchIdx === -1) return prev;
-              return prev.map((t, i) =>
-                i === matchIdx ? { ...t, status: nextStatus } : t,
-              );
-            });
+          if (kind === "tool_call_completed" || kind === "tool_result") {
+            const invocationId = eventInvocationId(ev);
+            if (invocationId === undefined) return;
+            const isErr = eventIsError(ev);
+            const resultText = eventResultText(ev);
+            const patch: Partial<ToolCallState> = {
+              status: isErr ? "error" : "done",
+            };
+            if (resultText !== undefined) patch.result = resultText;
+            transcript.updateToolCall(assistantId, invocationId, patch);
             return;
           }
-          // Unknown kinds (thinking_delta, iteration_completed,
-          // turn_completed, ...) are ignored at this layer — they don't
-          // contribute to the one-shot UI.
         });
 
         await handle.done;
-        if (cancelled) return;
-        setFinished(true);
-        // Hold the final frame briefly so the user can read it before exit.
-        setTimeout(() => {
-          if (!cancelled) app.exit();
-        }, EXIT_HOLD_MS);
       } catch (e) {
         if (cancelled) return;
-        // Ctrl+C → BridgeCancelled. Treat it as a clean exit: keep whatever
-        // streamed text and tool badges we already painted, drop the cursor
-        // via `finished`, and bail without an error banner.
-        if (e instanceof BridgeCancelled) {
-          setFinished(true);
+        // BridgeCancelled is a clean exit path — keep whatever streamed, drop
+        // the spinner, fall through to the finally so we still app.exit().
+        if (!(e instanceof BridgeCancelled)) {
+          setRuntimeError(e as Error);
+        }
+      } finally {
+        if (handleRef.current === handle) handleRef.current = null;
+        setWaitingForFirstToken(false);
+        transcript.finishAssistant(assistantId);
+        if (!cancelled) {
           setTimeout(() => {
             if (!cancelled) app.exit();
           }, EXIT_HOLD_MS);
-          return;
         }
-        setRuntimeError(e as Error);
-        // Give the error one frame to paint, then bail.
-        setTimeout(() => {
-          if (!cancelled) app.exit();
-        }, EXIT_HOLD_MS);
-      } finally {
-        // Drop the cancel target — either the send finished, errored, or
-        // was already cancelled. A stray Ctrl+C after this point becomes a
-        // no-op.
-        if (handleRef.current === handle) handleRef.current = null;
       }
     })();
 
@@ -279,8 +252,8 @@ export function OneShotMode({ args }: OneShotModeProps): React.JSX.Element {
       cancelled = true;
     };
     // Effect intentionally fires once after the bridge is ready. Re-running
-    // on every render would re-send the prompt; downstream consumers should
-    // remount via `key` if they need to retry.
+    // would re-send the prompt; downstream consumers should remount via `key`
+    // if they need to retry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, client]);
 
@@ -294,34 +267,33 @@ export function OneShotMode({ args }: OneShotModeProps): React.JSX.Element {
     return <Text dimColor>connecting…</Text>;
   }
 
-  const promptDisplay = args.prompt ?? "";
-  const sessionDisplay =
-    sessionId !== null ? `${sessionId.slice(0, 8)}…` : null;
+  const sessionShort = sessionId !== null ? `${sessionId.slice(0, 8)}…` : null;
+  // OneShot doesn't have an exit dance — the only volatile hint is whether
+  // a cancel is currently possible.
+  const cancelHint: string | null =
+    handleRef.current !== null ? "Ctrl+C to cancel" : null;
 
   return (
     <Box flexDirection="column">
-      {sessionDisplay !== null && (
-        <Text dimColor>session: {sessionDisplay}</Text>
+      {transcript.items.map((item) => (
+        <TranscriptItemView key={item.id} item={item} />
+      ))}
+      <Spinner active={waitingForFirstToken} />
+      {permission !== null && (
+        <PermissionDialog
+          tool={permission.tool}
+          args={permission.args}
+          onDecide={permission.resolve}
+        />
       )}
-      <Text dimColor>{`> ${promptDisplay}`}</Text>
-      <Box flexDirection="column">
-        {tools.map((t, i) => (
-          <ToolUseBadge
-            key={t.invocationId ?? `idx-${i}`}
-            tool={t.tool}
-            status={t.status}
-            args={t.args}
-          />
-        ))}
-        {permission !== null && (
-          <PermissionDialog
-            tool={permission.tool}
-            args={permission.args}
-            onDecide={permission.resolve}
-          />
-        )}
-        <StreamingMessage text={text} finished={finished} />
-      </Box>
+      <StatusBar
+        provider={args.provider}
+        model={args.model}
+        sessionIdShort={sessionShort}
+        yolo={args.yolo}
+        telemetry={telemetry}
+        cancelHint={cancelHint}
+      />
     </Box>
   );
 }

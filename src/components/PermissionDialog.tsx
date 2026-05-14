@@ -26,7 +26,7 @@ export interface PermissionDialogProps {
   onDecide: (decision: PermissionDecision) => void;
 }
 
-/** Truncate args identically to ToolUseBadge so the visual line is bounded. */
+/** Truncate args to a single bounded line so the dialog stays one row tall. */
 function formatArgs(args: unknown): string | null {
   if (args === undefined) return null;
   try {

@@ -1,63 +1,50 @@
 /**
- * ReplMode — interactive multi-turn chat.
+ * ReplMode — interactive multi-turn chat (Phase 12 rewrite).
  *
- * Lifecycle:
- *   1. `useBridgeClient` spawns the bridge and we wait for `ready`.
- *   2. The first non-empty user prompt lazily calls `session.create` and we
- *      reuse the returned id for every subsequent turn (one session per
- *      REPL invocation).
- *   3. Each Enter from <PromptInput> either:
- *        - `/exit` or `/quit`  → app.exit() (no message sent)
- *        - empty / whitespace  → ignored (input is just cleared)
- *        - anything else       → appended to `history`, pushed as a new turn
- *          in scrollback, and forwarded to the bridge via `sendMessage`.
- *   4. Each turn's `SendMessageHandle` is wired to:
- *        - `onEvent` → accumulate `text_delta` chunks into the turn's
- *          response field (other event kinds are ignored at this layer).
- *        - `onPermissionRequest` → surface a <PermissionDialog> so tool
- *          approval works inside the REPL too (mirrors OneShotMode T14).
- *      When `handle.done` settles we flip the turn's `done` flag so
- *      <StreamingMessage> drops the trailing cursor.
+ * Key behavior changes vs Phase 11:
+ *   - All scrollback (user prompts, assistant responses, /sessions and /tools
+ *     output, errors) flows through a single transcript array. Completed items
+ *     render inside Ink's <Static>, so high-frequency `text_delta` updates
+ *     only re-render the currently-streaming assistant turn.
+ *   - /sessions and /tools append SYSTEM transcript items instead of being
+ *     fixed side panels — they scroll naturally with the conversation, which
+ *     fixes the panel-overlap bug.
+ *   - A <Spinner> appears between submit and the first `text_delta`.
+ *   - Ctrl+C cancels an inflight turn; when idle, a second tap within 2s
+ *     exits (via `useCancelOrExit`). The hint surfaces on the StatusBar's
+ *     right side as "press Ctrl+C again to exit".
+ *   - <StatusBar> at the bottom shows provider/model/short session id/yolo
+ *     plus the most recent telemetry pulse.
  *
- * Notes:
- *   - We don't keep `SendMessageHandle` references around past `done` —
- *     cancellation is T16's responsibility.
- *   - All state mutations from async callbacks use functional setState so
- *     we don't capture stale `turns` between Enter presses.
- *   - Permission requests are serialized by the bridge per outstanding
- *     `send_message`, but if two turns ever overlap (e.g. cancel-then-retry
- *     in a later task) the dialog still only ever shows the most recent
- *     pending request — both promises share the same modal slot.
+ * Streaming/active turn semantics:
+ *   The id of the currently-streaming assistant item is stashed in
+ *   `activeAssistantIdRef`. While streaming, that item is rendered DYNAMICALLY
+ *   below the <Static> block. Once `finishAssistant` flips `done=true` and the
+ *   ref clears, the item is folded back into the Static set on the next
+ *   render (Static appends are append-only across renders, which is exactly
+ *   what Ink documents).
  */
 
 import type React from "react";
-import { useEffect, useRef, useState } from "react";
-import { Box, Text, useApp } from "ink";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Box, Static, Text, useApp } from "ink";
 import {
   BridgeCancelled,
   type PermissionDecision,
   type SendMessageHandle,
-  type SessionListEntry,
-  type ToolSpec,
 } from "@meta-harney/bridge-client";
 import { useBridgeClient } from "../hooks/useBridgeClient.js";
-import { useCancelBinding } from "../hooks/useKeybinds.js";
+import { useCancelOrExit } from "../hooks/useKeybinds.js";
+import { useTranscript } from "../hooks/useTranscript.js";
 import { PromptInput } from "../components/PromptInput.js";
 import { PermissionDialog } from "../components/PermissionDialog.js";
-import { SessionListPanel } from "../components/SessionListPanel.js";
-import { StreamingMessage } from "../components/StreamingMessage.js";
-import { TelemetryBar } from "../components/TelemetryBar.js";
-import { ToolsListPanel } from "../components/ToolsListPanel.js";
-import type { CliArgs } from "../types.js";
+import { Spinner } from "../components/Spinner.js";
+import { StatusBar } from "../components/StatusBar.js";
+import { TranscriptItemView } from "../components/TranscriptItemView.js";
+import type { CliArgs, TranscriptItem, ToolCallState } from "../types.js";
 
 export interface ReplModeProps {
   args: CliArgs;
-}
-
-interface Turn {
-  prompt: string;
-  response: string;
-  done: boolean;
 }
 
 interface PendingPermission {
@@ -66,49 +53,91 @@ interface PendingPermission {
   resolve: (decision: PermissionDecision) => void;
 }
 
-/** Loosely typed StreamEvent — duck-typed because the bridge serializes
- *  pydantic events verbatim and we only consume `text_delta`'s `text`. */
+/**
+ * Loosely typed StreamEvent — duck-typed because the bridge serializes
+ * pydantic events verbatim and we only consume a handful of fields. We accept
+ * both the canonical engine event names (`tool_call_started`, `tool_call_completed`)
+ * and their legacy aliases (`tool_use`, `tool_result`).
+ */
 interface StreamEventLike {
   kind?: string;
   text?: string;
+  tool?: string;
+  tool_name?: string;
+  invocation_id?: string;
+  invocationId?: string;
+  args?: unknown;
+  result?: unknown;
+  error?: unknown;
+  is_error?: boolean;
+}
+
+function eventToolName(e: StreamEventLike): string {
+  return e.tool_name ?? e.tool ?? "tool";
+}
+
+function eventInvocationId(e: StreamEventLike): string | undefined {
+  return e.invocationId ?? e.invocation_id;
+}
+
+function eventIsError(e: StreamEventLike): boolean {
+  if (e.error !== undefined && e.error !== null) return true;
+  if (e.is_error === true) return true;
+  const result = e.result;
+  if (
+    result !== undefined &&
+    result !== null &&
+    typeof result === "object" &&
+    "is_error" in (result as Record<string, unknown>)
+  ) {
+    return (result as { is_error?: unknown }).is_error === true;
+  }
+  return false;
+}
+
+function eventResultText(e: StreamEventLike): string | undefined {
+  const r = e.result;
+  if (typeof r === "string") return r;
+  if (r !== undefined && r !== null && typeof r === "object") {
+    try {
+      return JSON.stringify(r);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
   const { client, ready, error } = useBridgeClient(args);
-  const [turns, setTurns] = useState<Turn[]>([]);
+  const transcript = useTranscript();
   const [history, setHistory] = useState<string[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [permission, setPermission] = useState<PendingPermission | null>(null);
   const [runtimeError, setRuntimeError] = useState<Error | null>(null);
-  // Side-panel state. Each panel toggles via its slash-command: first
-  // invocation fetches data + makes the panel visible, second invocation
-  // hides it (we keep the cached data on the first toggle-off so re-opening
-  // is instant; a third toggle refreshes). Mutual exclusivity isn't enforced
-  // — both panels can be visible simultaneously, which keeps the UX
-  // predictable (each command only touches its own state).
-  const [sessions, setSessions] = useState<SessionListEntry[]>([]);
-  const [sessionsVisible, setSessionsVisible] = useState(false);
-  const [tools, setTools] = useState<ToolSpec[]>([]);
-  const [toolsVisible, setToolsVisible] = useState(false);
-  // Most recent telemetry event surfaced by the bridge — drives
-  // <TelemetryBar/>. Null until the first `telemetry/event` arrives, which
-  // renders "idle" so the bar's row is reserved from the first frame.
   const [telemetry, setTelemetry] = useState<{
     event_type: string;
     elapsed_ms: number;
   } | null>(null);
-  // Latest in-flight send handle, or null when no turn is streaming. We use
-  // a ref (not state) because Ctrl+C should fire against the freshest
-  // handle without forcing a re-render on every send/finish.
+  const [waitingForFirstToken, setWaitingForFirstToken] = useState(false);
+  const [exitHintVisible, setExitHintVisible] = useState(false);
+  // Force a re-render whenever the active turn switches in/out so the
+  // Static/dynamic split below updates without waiting for an unrelated state
+  // bump. Bumping `activeBump` is purely a re-render trigger.
+  const [, setActiveBump] = useState(0);
+
+  // Live send handle for cancellation. Ref so Ctrl+C always targets the
+  // freshest value without forcing a re-render on every send/finish.
   const handleRef = useRef<SendMessageHandle | null>(null);
+  // Id of the assistant transcript item currently streaming, or null when no
+  // turn is in flight. We render this item dynamically; everything else goes
+  // through <Static>.
+  const activeAssistantIdRef = useRef<string | null>(null);
   const app = useApp();
 
   // Subscribe to bridge telemetry once the client is up. We register the
-  // local sink first so we don't miss events that arrive between the
-  // subscribe RPC's send and its response, then fire-and-forget the
-  // `telemetry/subscribe` call (failure isn't fatal — the bar just stays
-  // "idle"). The TraceEvent payload carries `duration_ms` (float); we round
-  // for display so the bar doesn't jitter with sub-ms decimals.
+  // local sink first (so events that arrive between RPC send and ack aren't
+  // dropped), then fire-and-forget the subscribe call.
   useEffect(() => {
     if (client === null) return;
     client.onTelemetry((ev) => {
@@ -123,22 +152,154 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
       });
     });
     void client.telemetrySubscribe(true).catch(() => {
-      // Non-fatal — the bar just stays at "idle" until the user retries.
+      // Non-fatal — the StatusBar just stays at "idle" until the user retries.
     });
   }, [client]);
 
-  // Ctrl+C cancels the current turn via `$/cancelRequest`. When no turn is
-  // in flight, the keypress is a no-op (we deliberately don't exit the REPL
-  // — users have `/exit` for that). Cancellation rejects `handle.done` with
-  // BridgeCancelled, which the try/finally below already treats as a
-  // normal completion path.
-  useCancelBinding(() => {
-    const h = handleRef.current;
-    if (h === null) return;
-    h.cancel().catch(() => {
-      /* cancel may race with normal completion — ignore */
-    });
+  useCancelOrExit({
+    getInflight: () => handleRef.current,
+    onExit: () => app.exit(),
+    onHint: setExitHintVisible,
   });
+
+  const submit = useCallback(
+    (prompt: string): void => {
+      if (client === null) return;
+      // Slash commands handled before any session work so we can /exit even
+      // before the first message creates a session.
+      if (prompt === "/exit" || prompt === "/quit") {
+        app.exit();
+        return;
+      }
+      if (prompt === "/sessions") {
+        void (async () => {
+          try {
+            const list = await client.sessionList();
+            transcript.appendSystem("sessions", list);
+          } catch (e) {
+            transcript.appendSystem("error", (e as Error).message);
+          }
+        })();
+        return;
+      }
+      if (prompt === "/tools") {
+        void (async () => {
+          try {
+            const list = await client.toolsList();
+            transcript.appendSystem("tools", list);
+          } catch (e) {
+            transcript.appendSystem("error", (e as Error).message);
+          }
+        })();
+        return;
+      }
+      if (prompt.trim() === "") return;
+
+      setHistory((h) => [...h, prompt]);
+      transcript.appendUser(prompt);
+      const assistantId = transcript.appendAssistant();
+      activeAssistantIdRef.current = assistantId;
+      setActiveBump((n) => n + 1);
+      setWaitingForFirstToken(true);
+
+      void (async () => {
+        let handle: SendMessageHandle | null = null;
+        try {
+          let sid = sessionId;
+          if (sid === null) {
+            const summary = await client.sessionCreate();
+            sid = summary.id;
+            setSessionId(sid);
+          }
+
+          handle = client.sendMessage(sid, {
+            role: "user",
+            content: [{ type: "text", text: prompt }],
+          });
+          handleRef.current = handle;
+
+          handle.onPermissionRequest(
+            (req) =>
+              new Promise((resolve) => {
+                setPermission({
+                  tool: req.tool,
+                  args: req.tool_args,
+                  resolve: (decision) => {
+                    setPermission(null);
+                    resolve({ decision });
+                  },
+                });
+              }),
+          );
+
+          handle.onEvent((raw: unknown) => {
+            if (raw === null || typeof raw !== "object") return;
+            const ev = raw as StreamEventLike;
+            const kind = ev.kind ?? "";
+
+            if (kind === "text_delta") {
+              const chunk = typeof ev.text === "string" ? ev.text : "";
+              if (chunk.length === 0) return;
+              setWaitingForFirstToken(false);
+              transcript.appendToken(assistantId, chunk);
+              return;
+            }
+
+            if (kind === "tool_call_started" || kind === "tool_use") {
+              // First evidence of model output — drop the spinner.
+              setWaitingForFirstToken(false);
+              const invocationId =
+                eventInvocationId(ev) ??
+                `inv-${Math.random().toString(36).slice(2)}`;
+              const call: ToolCallState = {
+                invocationId,
+                tool: eventToolName(ev),
+                args: ev.args ?? null,
+                status: "running",
+              };
+              transcript.appendToolCall(assistantId, call);
+              return;
+            }
+
+            if (kind === "tool_call_completed" || kind === "tool_result") {
+              const invocationId = eventInvocationId(ev);
+              if (invocationId === undefined) return;
+              const isErr = eventIsError(ev);
+              const resultText = eventResultText(ev);
+              const patch: Partial<ToolCallState> = {
+                status: isErr ? "error" : "done",
+              };
+              if (resultText !== undefined) patch.result = resultText;
+              transcript.updateToolCall(assistantId, invocationId, patch);
+              return;
+            }
+            // Unknown kinds (thinking_delta, iteration_completed, ...) are
+            // ignored at this layer.
+          });
+
+          await handle.done;
+        } catch (e) {
+          if (e instanceof BridgeCancelled) {
+            // Partial response already accumulated; finally finalizes the turn.
+          } else {
+            transcript.appendSystem("error", (e as Error).message);
+            // If session.create itself blew up, the REPL is unusable —
+            // surface as a runtime error so we render the red banner.
+            if (sessionId === null) setRuntimeError(e as Error);
+          }
+        } finally {
+          if (handleRef.current === handle) handleRef.current = null;
+          if (activeAssistantIdRef.current === assistantId) {
+            activeAssistantIdRef.current = null;
+            setActiveBump((n) => n + 1);
+          }
+          setWaitingForFirstToken(false);
+          transcript.finishAssistant(assistantId);
+        }
+      })();
+    },
+    [client, sessionId, transcript, app],
+  );
 
   if (error !== null) {
     return <Text color="red">error: {error.message}</Text>;
@@ -150,171 +311,38 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
     return <Text dimColor>connecting…</Text>;
   }
 
-  const onSubmit = (prompt: string): void => {
-    // Slash-commands handled before any session work so we can /exit even
-    // before the first message creates a session.
-    if (prompt === "/exit" || prompt === "/quit") {
-      app.exit();
-      return;
-    }
-    // Side-panel toggles. Each command is its own toggle:
-    //   - visible → hide (cheap, no RPC)
-    //   - hidden  → fetch fresh data then show
-    // Errors are surfaced via runtimeError so a transient RPC failure
-    // doesn't silently swallow the user's command.
-    if (prompt === "/sessions") {
-      if (sessionsVisible) {
-        setSessionsVisible(false);
-      } else {
-        void (async () => {
-          try {
-            const list = await client.sessionList();
-            setSessions(list);
-            setSessionsVisible(true);
-          } catch (e) {
-            setRuntimeError(e as Error);
-          }
-        })();
-      }
-      return;
-    }
-    if (prompt === "/tools") {
-      if (toolsVisible) {
-        setToolsVisible(false);
-      } else {
-        void (async () => {
-          try {
-            const list = await client.toolsList();
-            setTools(list);
-            setToolsVisible(true);
-          } catch (e) {
-            setRuntimeError(e as Error);
-          }
-        })();
-      }
-      return;
-    }
-    if (prompt.trim() === "") {
-      // Empty submit (just hitting Enter) — drop silently. PromptInput has
-      // already cleared its buffer.
-      return;
-    }
+  // Split transcript into completed (Static) + active (dynamic). The active
+  // item is the assistant turn currently streaming — anything else (older
+  // turns, user prompts, system blocks) is "done" from Ink's perspective and
+  // safe to memoize in <Static>.
+  const activeId = activeAssistantIdRef.current;
+  const completed: TranscriptItem[] = transcript.items.filter((it) => {
+    if (activeId === null) return true;
+    return !(it.kind === "assistant" && it.id === activeId);
+  });
+  const active: TranscriptItem | undefined =
+    activeId !== null
+      ? transcript.items.find(
+          (it) => it.kind === "assistant" && it.id === activeId,
+        )
+      : undefined;
 
-    // Append to history immediately so the user sees their input even if
-    // session.create hasn't resolved yet.
-    setHistory((h) => [...h, prompt]);
-
-    // Snapshot the turn index so async callbacks update the right slot
-    // even after later turns are appended.
-    const turnIdx = turns.length;
-    setTurns((prev) => [...prev, { prompt, response: "", done: false }]);
-
-    void (async () => {
-      // Declared outside the try so the finally block can compare against
-      // the handle we published into `handleRef`.
-      let handle: SendMessageHandle | null = null;
-      try {
-        // Lazily create the session on the first real prompt. Subsequent
-        // turns reuse the cached id.
-        let sid = sessionId;
-        if (sid === null) {
-          const summary = await client.sessionCreate();
-          sid = summary.id;
-          setSessionId(sid);
-        }
-
-        handle = client.sendMessage(sid, {
-          role: "user",
-          content: [{ type: "text", text: prompt }],
-        });
-        // Publish the live handle so `useCancelBinding` can target it. We
-        // overwrite unconditionally — only one turn is in flight at a time
-        // because PromptInput won't surface another submit until this
-        // closure's finally runs.
-        handleRef.current = handle;
-
-        // Route permission/request RPCs to the modal. The resolver wrapper
-        // clears the dialog atomically with the decision so a fast second
-        // request can't race the unmount of the previous one.
-        handle.onPermissionRequest(
-          (req) =>
-            new Promise((resolve) => {
-              setPermission({
-                tool: req.tool,
-                args: req.tool_args,
-                resolve: (decision) => {
-                  setPermission(null);
-                  resolve({ decision });
-                },
-              });
-            }),
-        );
-
-        handle.onEvent((raw: unknown) => {
-          if (raw === null || typeof raw !== "object") return;
-          const ev = raw as StreamEventLike;
-          if (ev.kind !== "text_delta") return;
-          const chunk = typeof ev.text === "string" ? ev.text : "";
-          if (chunk.length === 0) return;
-          setTurns((prev) =>
-            prev.map((t, i) =>
-              i === turnIdx ? { ...t, response: t.response + chunk } : t,
-            ),
-          );
-        });
-
-        await handle.done;
-      } catch (e) {
-        // Ctrl+C cancellation is a normal completion path — keep whatever
-        // text streamed so far and let the finally block mark the turn
-        // done. We deliberately don't append an `[error]` line for these.
-        if (e instanceof BridgeCancelled) {
-          // no-op — turn already shows partial response; cursor will drop
-          // when `done` flips below.
-        } else {
-          // Surface the error inline on the turn rather than nuking the
-          // REPL — a single failed send shouldn't kill the session.
-          setTurns((prev) =>
-            prev.map((t, i) =>
-              i === turnIdx
-                ? {
-                    ...t,
-                    response:
-                      t.response.length > 0
-                        ? `${t.response}\n[error] ${(e as Error).message}`
-                        : `[error] ${(e as Error).message}`,
-                  }
-                : t,
-            ),
-          );
-          // Stash on the runtimeError state only if there's no session yet
-          // — that means session.create itself blew up and the REPL is
-          // unusable.
-          if (sessionId === null) setRuntimeError(e as Error);
-        }
-      } finally {
-        // Clear the cancel target so a stray Ctrl+C after completion
-        // doesn't try to cancel a finished handle.
-        if (handleRef.current === handle) handleRef.current = null;
-        setTurns((prev) =>
-          prev.map((t, i) => (i === turnIdx ? { ...t, done: true } : t)),
-        );
-      }
-    })();
-  };
-
-  const sessionDisplay =
-    sessionId !== null ? `${sessionId.slice(0, 8)}…` : "no session";
+  const sessionShort = sessionId !== null ? `${sessionId.slice(0, 8)}…` : null;
+  // Right side of StatusBar prioritizes the exit hint, then a cancel hint
+  // when a turn is inflight, otherwise telemetry/idle.
+  const cancelHint: string | null = exitHintVisible
+    ? "press Ctrl+C again to exit"
+    : handleRef.current !== null
+      ? "Ctrl+C to cancel"
+      : null;
 
   return (
     <Box flexDirection="column">
-      <Text dimColor>oh-tui · {sessionDisplay}</Text>
-      {turns.map((t, i) => (
-        <Box key={i} flexDirection="column" marginTop={1}>
-          <Text dimColor>&gt; {t.prompt}</Text>
-          <StreamingMessage text={t.response} finished={t.done} />
-        </Box>
-      ))}
+      <Static items={completed}>
+        {(item) => <TranscriptItemView key={item.id} item={item} />}
+      </Static>
+      {active !== undefined && <TranscriptItemView item={active} />}
+      <Spinner active={waitingForFirstToken} />
       {permission !== null && (
         <PermissionDialog
           tool={permission.tool}
@@ -322,16 +350,15 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
           onDecide={permission.resolve}
         />
       )}
-      {/* Side panels are informational, not modal — they sit above the
-          prompt so the user can keep typing without losing focus, and a
-          repeat of the same slash-command toggles them away. */}
-      {sessionsVisible && <SessionListPanel sessions={sessions} />}
-      {toolsVisible && <ToolsListPanel tools={tools} />}
-      <PromptInput history={history} onSubmit={onSubmit} />
-      {/* Status bar sits below the prompt — it's a passive heartbeat, so
-          keeping it outside the input region preserves prompt focus while
-          the latest telemetry event stays in peripheral view. */}
-      <TelemetryBar latest={telemetry} />
+      <PromptInput history={history} onSubmit={submit} />
+      <StatusBar
+        provider={args.provider}
+        model={args.model}
+        sessionIdShort={sessionShort}
+        yolo={args.yolo}
+        telemetry={telemetry}
+        cancelHint={cancelHint}
+      />
     </Box>
   );
 }
