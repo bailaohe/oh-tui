@@ -1,11 +1,12 @@
 /**
  * Top-level Ink component for oh-tui.
  *
- * NOTE: This is a Task 10 stub. Real UI lands in T11+.
+ * Routes to OneShotMode when a prompt was passed via argv, otherwise to ReplMode.
  */
 
-import React from "react";
-import { Box, Text } from "ink";
+import type React from "react";
+import { OneShotMode } from "./modes/OneShotMode.js";
+import { ReplMode } from "./modes/ReplMode.js";
 import type { CliArgs } from "./types.js";
 
 export interface AppProps {
@@ -13,10 +14,5 @@ export interface AppProps {
 }
 
 export function App({ args }: AppProps): React.JSX.Element {
-  return (
-    <Box flexDirection="column">
-      <Text>oh-tui v0.1.0 (scaffolding)</Text>
-      <Text dimColor>bridge: {args.bridgeBin}</Text>
-    </Box>
-  );
+  return args.prompt !== null ? <OneShotMode args={args} /> : <ReplMode args={args} />;
 }
