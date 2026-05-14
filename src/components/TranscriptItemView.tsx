@@ -13,7 +13,7 @@ import type {
   SessionListEntry,
   ToolSpec,
 } from "../types.js";
-import { StreamingMessage } from "./StreamingMessage.js";
+import { MarkdownText } from "./MarkdownText.js";
 
 export interface TranscriptItemViewProps {
   item: TranscriptItem;
@@ -31,7 +31,6 @@ export function TranscriptItemView({
         </Box>
       );
     case "assistant":
-      // T3 swaps StreamingMessage for MarkdownText.
       return (
         <Box flexDirection="column">
           {item.toolCalls.length > 0 && (
@@ -44,7 +43,7 @@ export function TranscriptItemView({
               ))}
             </Box>
           )}
-          <StreamingMessage text={item.text} finished={item.done} />
+          <MarkdownText source={item.text} cursor={!item.done} />
         </Box>
       );
     case "system":
