@@ -1,0 +1,36 @@
+{
+  "name": "oh-tui",
+  "version": "0.1.0",
+  "description": "Ink TUI for the oh-mini coding agent",
+  "type": "module",
+  "bin": { "oh-tui": "./bin/oh-tui" },
+  "files": ["bin", "src", "README.md"],
+  "scripts": {
+    "start": "tsx src/cli.tsx",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests --ext .ts,.tsx",
+    "format": "prettier -w src tests"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@meta-harney/bridge-client": "file:../meta-harney/clients/typescript",
+    "ink": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "react": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/react": "^18.2.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react": "^7.34.0",
+    "ink-testing-library": "^4.0.0",
+    "prettier": "^3.2.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  }
+}
