@@ -31,7 +31,7 @@
  */
 
 import type React from "react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Box, Text, useApp } from "ink";
 import {
   BridgeCancelled,
@@ -46,6 +46,7 @@ import { PromptInput } from "../components/PromptInput.js";
 import { PermissionDialog } from "../components/PermissionDialog.js";
 import { SessionListPanel } from "../components/SessionListPanel.js";
 import { StreamingMessage } from "../components/StreamingMessage.js";
+import { TelemetryBar } from "../components/TelemetryBar.js";
 import { ToolsListPanel } from "../components/ToolsListPanel.js";
 import type { CliArgs } from "../types.js";
 
@@ -89,11 +90,42 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
   const [sessionsVisible, setSessionsVisible] = useState(false);
   const [tools, setTools] = useState<ToolSpec[]>([]);
   const [toolsVisible, setToolsVisible] = useState(false);
+  // Most recent telemetry event surfaced by the bridge — drives
+  // <TelemetryBar/>. Null until the first `telemetry/event` arrives, which
+  // renders "idle" so the bar's row is reserved from the first frame.
+  const [telemetry, setTelemetry] = useState<{
+    event_type: string;
+    elapsed_ms: number;
+  } | null>(null);
   // Latest in-flight send handle, or null when no turn is streaming. We use
   // a ref (not state) because Ctrl+C should fire against the freshest
   // handle without forcing a re-render on every send/finish.
   const handleRef = useRef<SendMessageHandle | null>(null);
   const app = useApp();
+
+  // Subscribe to bridge telemetry once the client is up. We register the
+  // local sink first so we don't miss events that arrive between the
+  // subscribe RPC's send and its response, then fire-and-forget the
+  // `telemetry/subscribe` call (failure isn't fatal — the bar just stays
+  // "idle"). The TraceEvent payload carries `duration_ms` (float); we round
+  // for display so the bar doesn't jitter with sub-ms decimals.
+  useEffect(() => {
+    if (client === null) return;
+    client.onTelemetry((ev) => {
+      const payload = ev.payload as { duration_ms?: number } | null;
+      const elapsed =
+        payload !== null && typeof payload.duration_ms === "number"
+          ? payload.duration_ms
+          : 0;
+      setTelemetry({
+        event_type: ev.event_type,
+        elapsed_ms: Math.round(elapsed),
+      });
+    });
+    void client.telemetrySubscribe(true).catch(() => {
+      // Non-fatal — the bar just stays at "idle" until the user retries.
+    });
+  }, [client]);
 
   // Ctrl+C cancels the current turn via `$/cancelRequest`. When no turn is
   // in flight, the keypress is a no-op (we deliberately don't exit the REPL
@@ -296,6 +328,10 @@ export function ReplMode({ args }: ReplModeProps): React.JSX.Element {
       {sessionsVisible && <SessionListPanel sessions={sessions} />}
       {toolsVisible && <ToolsListPanel tools={tools} />}
       <PromptInput history={history} onSubmit={onSubmit} />
+      {/* Status bar sits below the prompt — it's a passive heartbeat, so
+          keeping it outside the input region preserves prompt focus while
+          the latest telemetry event stays in peripheral view. */}
+      <TelemetryBar latest={telemetry} />
     </Box>
   );
 }
