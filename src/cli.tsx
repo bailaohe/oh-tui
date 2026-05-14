@@ -5,6 +5,7 @@
 
 import { render } from "ink";
 import { App } from "./App.js";
+import { teardownActiveBridge } from "./hooks/useBridgeClient.js";
 import type { CliArgs } from "./types.js";
 
 const VERSION = "0.1.0";
@@ -82,13 +83,22 @@ Options:
   --version                    print version and exit`);
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   // exitOnCtrlC=false lets `useCancelBinding` claim Ctrl+C so it can fire
   // `$/cancelRequest` instead of nuking the process mid-stream. If no
   // in-flight handle exists, modes still fall through to a normal exit
   // (REPL via `/exit`, OneShot after `handle.done`).
-  render(<App args={args} />, { exitOnCtrlC: false });
+  const inst = render(<App args={args} />, { exitOnCtrlC: false });
+  await inst.waitUntilExit();
+  // Ink has unmounted; useEffect cleanup published the live client to a
+  // module-level singleton. Drain the bridge subprocess so node can quit.
+  // Bounded so a wedged bridge can't keep us alive forever.
+  await Promise.race([
+    teardownActiveBridge(),
+    new Promise<void>((r) => setTimeout(r, 6000)),
+  ]);
+  process.exit(0);
 }
 
-main();
+void main();

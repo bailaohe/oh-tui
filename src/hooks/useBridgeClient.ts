@@ -80,6 +80,18 @@ async function startClient(args: CliArgs): Promise<BridgeClient> {
   return client;
 }
 
+// Module-level singleton so cli.tsx can await teardown after Ink exits.
+// useEffect cleanup is sync and can't await Promises, so we publish the
+// live client here and let main() drain it on shutdown.
+let _activeClient: BridgeClient | null = null;
+
+export async function teardownActiveBridge(): Promise<void> {
+  const c = _activeClient;
+  if (c === null) return;
+  _activeClient = null;
+  await stopClient(c);
+}
+
 async function stopClient(client: BridgeClient): Promise<void> {
   // Best-effort teardown. The child may already be dead (crashed,
   // signaled, or never reached `initialize`), so we swallow errors
@@ -122,6 +134,7 @@ export function useBridgeClient(args: CliArgs): UseBridgeClientResult {
           return;
         }
         clientRef.current = c;
+        _activeClient = c;
         setClient(c);
         setReady(true);
       })
@@ -131,8 +144,8 @@ export function useBridgeClient(args: CliArgs): UseBridgeClientResult {
 
     return () => {
       mounted = false;
-      const c = clientRef.current;
-      if (c !== null) void stopClient(c);
+      // We don't await here (cleanup is sync) — main() awaits
+      // `teardownActiveBridge()` after Ink finishes unmounting.
     };
     // We intentionally depend only on mount: re-spawning the bridge on
     // every prop change would orphan child processes. Use `restart()` to
@@ -147,11 +160,13 @@ export function useBridgeClient(args: CliArgs): UseBridgeClientResult {
       clientRef.current = null;
       setClient(null);
       if (oldClient !== null) {
+        if (_activeClient === oldClient) _activeClient = null;
         await stopClient(oldClient);
       }
       try {
         const newClient = await startClient(newArgs);
         clientRef.current = newClient;
+        _activeClient = newClient;
         setClient(newClient);
         setError(null);
         setReady(true);
