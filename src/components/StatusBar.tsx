@@ -102,7 +102,7 @@ export function StatusBar({
   }
 
   return (
-    <Box flexDirection="column" width="100%">
+    <Box flexDirection="column">
       <Text dimColor>{"─".repeat(Math.max(width, 1))}</Text>
       <Box>
         <Text>

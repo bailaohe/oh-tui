@@ -38,7 +38,7 @@ import { messagesToTranscript } from "./lib/replay.js";
 import { ThemeProvider, useTheme } from "./theme/ThemeContext.js";
 import type { CliArgs } from "./types.js";
 
-const VERSION = "0.7.0";
+const VERSION = "0.7.1";
 const EXIT_HOLD_MS = 100;
 
 export interface AppProps {
@@ -625,7 +625,7 @@ function AppInner({ args }: AppProps): React.JSX.Element {
   const showWelcome = transcript.items.length === 0 && args.prompt === null;
 
   return (
-    <Box flexDirection="column" width="100%">
+    <Box flexDirection="column">
       <ConversationView
         items={transcript.items}
         activeAssistantId={activeAssistantIdRef.current}

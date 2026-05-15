@@ -23,7 +23,7 @@ export function Footer({
   authStatus = "ok",
 }: FooterProps): React.JSX.Element {
   return (
-    <Box marginTop={1} width="100%">
+    <Box marginTop={1}>
       <Text dimColor>
         model={model ?? "unknown"} provider={provider ?? "unknown"}{" "}
         auth={authStatus} yolo={String(yolo)}{" "}

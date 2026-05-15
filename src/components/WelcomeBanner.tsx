@@ -9,6 +9,7 @@
 import type React from "react";
 import { Box, Text } from "ink";
 import { useTheme } from "../theme/ThemeContext.js";
+import { useTerminalWidth } from "../hooks/useTerminalWidth.js";
 
 const LOGO: string[] = [
   "   ____  __     __        __        _ ",
@@ -24,6 +25,7 @@ export interface WelcomeBannerProps {
 
 export function WelcomeBanner({ version }: WelcomeBannerProps): React.JSX.Element {
   const { theme } = useTheme();
+  const termWidth = useTerminalWidth();
   return (
     <Box
       flexDirection="column"
@@ -32,7 +34,7 @@ export function WelcomeBanner({ version }: WelcomeBannerProps): React.JSX.Elemen
       paddingX={2}
       paddingY={1}
       marginBottom={1}
-      width="100%"
+      width={Math.max(termWidth, 40)}
     >
       {LOGO.map((line, i) => (
         <Text key={i} color={theme.colors.primary} bold>
