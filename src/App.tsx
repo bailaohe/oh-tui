@@ -14,15 +14,15 @@
 
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Box, Text, useApp } from "ink";
+import { Box, Text, useApp, useInput } from "ink";
 import {
   BridgeCancelled,
   type PermissionDecision,
   type SendMessageHandle,
 } from "@meta-harney/bridge-client";
 import { useBridgeClient } from "./hooks/useBridgeClient.js";
-import { useCancelOrExit } from "./hooks/useKeybinds.js";
 import { useTranscript } from "./hooks/useTranscript.js";
+import { CommandPicker } from "./components/CommandPicker.js";
 import { ConversationView } from "./components/ConversationView.js";
 import { Footer } from "./components/Footer.js";
 import { PermissionDialog } from "./components/PermissionDialog.js";
@@ -35,7 +35,7 @@ import { Spinner } from "./components/Spinner.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { TodoPanel, parseTodos, type TodoItem } from "./components/TodoPanel.js";
 import { messagesToTranscript } from "./lib/replay.js";
-import { ThemeProvider } from "./theme/ThemeContext.js";
+import { ThemeProvider, useTheme } from "./theme/ThemeContext.js";
 import type { CliArgs } from "./types.js";
 
 const VERSION = "0.4.0";
@@ -148,7 +148,6 @@ function AppInner({ args }: AppProps): React.JSX.Element {
   const [runtimeError, setRuntimeError] = useState<Error | null>(null);
   const [telemetry, setTelemetry] = useState<{ event_type: string; elapsed_ms: number } | null>(null);
   const [waitingForFirstToken, setWaitingForFirstToken] = useState(false);
-  const [exitHintVisible, setExitHintVisible] = useState(false);
   const [sessionsModal, setSessionsModal] = useState<{ options: SelectOption[] } | null>(null);
   const [activeArgs, setActiveArgs] = useState<CliArgs>(args);
   const [providerModal, setProviderModal] = useState<SelectOption[] | null>(null);
@@ -156,6 +155,13 @@ function AppInner({ args }: AppProps): React.JSX.Element {
   const [profileModal, setProfileModal] = useState<SelectOption[] | null>(null);
   const [, setActiveBump] = useState(0);
   const [latestTodos, setLatestTodos] = useState<TodoItem[] | null>(null);
+  const [input, setInput] = useState("");
+  const [pickerIndex, setPickerIndex] = useState(0);
+  const [historyIdx, setHistoryIdx] = useState<number>(0);
+  const [draft, setDraft] = useState("");
+  const [lastEscapeAt, setLastEscapeAt] = useState(0);
+  const [themeModal, setThemeModal] = useState<SelectOption[] | null>(null);
+  const { setThemeName } = useTheme();
 
   const handleRef = useRef<SendMessageHandle | null>(null);
   const activeAssistantIdRef = useRef<string | null>(null);
@@ -177,11 +183,39 @@ function AppInner({ args }: AppProps): React.JSX.Element {
     void client.telemetrySubscribe(true).catch(() => {});
   }, [client]);
 
-  useCancelOrExit({
-    getInflight: () => handleRef.current,
-    onExit: () => app.exit(),
-    onHint: setExitHintVisible,
-  });
+  const COMMANDS: string[] = [
+    "/help",
+    "/exit",
+    "/quit",
+    "/sessions",
+    "/tools",
+    "/provider",
+    "/model",
+    "/profile",
+    "/theme",
+    "/resume",
+  ];
+
+  const commandHints = (() => {
+    const v = input.trim();
+    if (!v.startsWith("/")) return [] as string[];
+    return COMMANDS.filter((c) => c.startsWith(v)).slice(0, 10);
+  })();
+
+  const showPicker =
+    commandHints.length > 0 &&
+    !waitingForFirstToken &&
+    permission === null &&
+    sessionsModal === null &&
+    providerModal === null &&
+    modelModal === null &&
+    profileModal === null &&
+    themeModal === null;
+
+  // reset picker index when hints change
+  useEffect(() => {
+    setPickerIndex(0);
+  }, [commandHints.length, input]);
 
   const submit = useCallback(
     (prompt: string): void => {
@@ -259,6 +293,14 @@ function AppInner({ args }: AppProps): React.JSX.Element {
       }
       if (prompt === "/profile") {
         setProfileModal(PROFILE_OPTIONS);
+        return;
+      }
+      if (prompt === "/theme") {
+        setThemeModal([
+          { value: "default", label: "default" },
+          { value: "dark", label: "dark" },
+          { value: "minimal", label: "minimal" },
+        ]);
         return;
       }
       if (prompt.trim() === "") return;
@@ -368,6 +410,121 @@ function AppInner({ args }: AppProps): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, client]);
 
+  useInput((inputStr, key) => {
+    // 优先级 1：Ctrl+C
+    if (key.ctrl && inputStr === "c") {
+      if (handleRef.current !== null) {
+        handleRef.current.cancel().catch(() => {});
+        return;
+      }
+      app.exit();
+      return;
+    }
+
+    // 优先级 2：数字键快选
+    const activeModalOptions: SelectOption[] | null =
+      sessionsModal !== null
+        ? sessionsModal.options
+        : providerModal !== null
+          ? providerModal
+          : modelModal !== null
+            ? modelModal
+            : profileModal !== null
+              ? profileModal
+              : themeModal;
+
+    if (activeModalOptions !== null && /^[1-9]$/.test(inputStr)) {
+      const idx = parseInt(inputStr, 10) - 1;
+      const target = activeModalOptions[idx];
+      if (target !== undefined) {
+        if (sessionsModal !== null) {
+          setSessionsModal(null);
+          submit(`/resume ${target.value}`);
+        } else if (providerModal !== null) {
+          handleSwitchProvider(target.value);
+        } else if (modelModal !== null) {
+          handleSwitchModel(target.value);
+        } else if (profileModal !== null) {
+          handleSwitchProfile(target.value);
+        } else if (themeModal !== null) {
+          setThemeName(target.value);
+          setThemeModal(null);
+          transcript.appendSystem("info", `theme → ${target.value}`);
+        }
+      }
+      return;
+    }
+
+    // 优先级 3：CommandPicker active
+    if (showPicker) {
+      if (key.upArrow) {
+        setPickerIndex((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setPickerIndex((i) => Math.min(commandHints.length - 1, i + 1));
+        return;
+      }
+      if (key.return) {
+        const selected = commandHints[pickerIndex];
+        if (selected !== undefined) {
+          setInput("");
+          submit(selected);
+        }
+        return;
+      }
+      if (key.tab) {
+        const selected = commandHints[pickerIndex];
+        if (selected !== undefined) {
+          setInput(selected);
+        }
+        return;
+      }
+      if (key.escape) {
+        setInput("");
+        return;
+      }
+      return;
+    }
+
+    // 优先级 4：双击 Esc 清空（非 picker）
+    if (key.escape) {
+      const now = Date.now();
+      if (input.length > 0 && now - lastEscapeAt < 500) {
+        setInput("");
+        setLastEscapeAt(0);
+        return;
+      }
+      setLastEscapeAt(now);
+      return;
+    }
+
+    // 优先级 5：↑↓ history（非 picker，非 busy）
+    if (handleRef.current === null) {
+      if (key.upArrow) {
+        if (history.length === 0) return;
+        if (historyIdx === history.length) {
+          setDraft(input);
+          setHistoryIdx(history.length - 1);
+          setInput(history[history.length - 1] ?? "");
+          return;
+        }
+        const newIdx = Math.max(0, historyIdx - 1);
+        if (newIdx === historyIdx) return;
+        setHistoryIdx(newIdx);
+        setInput(history[newIdx] ?? "");
+        return;
+      }
+      if (key.downArrow) {
+        if (historyIdx >= history.length) return;
+        const newIdx = historyIdx + 1;
+        setHistoryIdx(newIdx);
+        setInput(newIdx === history.length ? draft : (history[newIdx] ?? ""));
+        return;
+      }
+    }
+  });
+
   // /provider /model /profile shared switch flow
   const performSwitch = useCallback(
     async (patch: Partial<CliArgs>, label: string): Promise<void> => {
@@ -426,11 +583,8 @@ function AppInner({ args }: AppProps): React.JSX.Element {
   if (!ready || client === null) return <Text dimColor>connecting…</Text>;
 
   const sessionShort = sessionId !== null ? `${sessionId.slice(0, 8)}…` : null;
-  const cancelHint: string | null = exitHintVisible
-    ? "press Ctrl+C again to exit"
-    : handleRef.current !== null
-      ? "Ctrl+C to cancel"
-      : null;
+  const cancelHint: string | null =
+    handleRef.current !== null ? "Ctrl+C to cancel" : null;
 
   const showWelcome = transcript.items.length === 0 && args.prompt === null;
 
@@ -444,6 +598,7 @@ function AppInner({ args }: AppProps): React.JSX.Element {
         fullToolOutput={activeArgs.fullToolOutput}
       />
       {latestTodos !== null && <TodoPanel todos={latestTodos} />}
+      {showPicker && <CommandPicker hints={commandHints} selectedIndex={pickerIndex} />}
       <Spinner active={waitingForFirstToken} />
       {permission !== null && (
         <PermissionDialog
@@ -494,7 +649,38 @@ function AppInner({ args }: AppProps): React.JSX.Element {
             onCancel={() => setProfileModal(null)}
           />
         )}
-      <PromptInput history={history} onSubmit={submit} />
+      {permission === null &&
+        sessionsModal === null &&
+        providerModal === null &&
+        modelModal === null &&
+        profileModal === null &&
+        themeModal !== null && (
+          <SelectModal
+            title="switch theme"
+            options={themeModal}
+            onSelect={(name) => {
+              setThemeName(name);
+              setThemeModal(null);
+              transcript.appendSystem("info", `theme → ${name}`);
+            }}
+            onCancel={() => setThemeModal(null)}
+          />
+        )}
+      <PromptInput
+        value={input}
+        onChange={(v) => {
+          setInput(v);
+          if (historyIdx !== history.length) setHistoryIdx(history.length);
+        }}
+        onSubmit={(v) => {
+          setHistory((h) => [...h, v]);
+          setHistoryIdx(history.length + 1);
+          setDraft("");
+          setInput("");
+          submit(v);
+        }}
+        suppressSubmit={showPicker}
+      />
       <StatusBar
         provider={activeArgs.provider ?? effective.provider}
         model={activeArgs.model ?? effective.model}
