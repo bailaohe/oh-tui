@@ -39,7 +39,7 @@ import { messagesToTranscript } from "./lib/replay.js";
 import { ThemeProvider, useTheme } from "./theme/ThemeContext.js";
 import type { CliArgs } from "./types.js";
 
-const VERSION = "0.7.4";
+const VERSION = "0.7.5";
 const EXIT_HOLD_MS = 100;
 
 // Set OH_TUI_DEBUG to a file path to dump bridge stream events for analysis.
