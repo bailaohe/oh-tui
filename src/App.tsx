@@ -34,16 +34,12 @@ import {
 import { Spinner } from "./components/Spinner.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { TodoPanel, parseTodos, type TodoItem } from "./components/TodoPanel.js";
-import { createDeltaBuffer, type DeltaBuffer } from "./lib/deltaBuffer.js";
 import { messagesToTranscript } from "./lib/replay.js";
 import { ThemeProvider, useTheme } from "./theme/ThemeContext.js";
 import type { CliArgs } from "./types.js";
 
-const VERSION = "0.6.2";
+const VERSION = "0.6.3";
 const EXIT_HOLD_MS = 100;
-const ASSISTANT_DELTA_FLUSH_MS = 50;
-const ASSISTANT_DELTA_FLUSH_CHARS = 384;
-const TRANSCRIPT_OP_FLUSH_MS = 50;
 
 export interface AppProps {
   args: CliArgs;
@@ -173,64 +169,11 @@ function AppInner({ args }: AppProps): React.JSX.Element {
   const exitTimerRef = useRef<NodeJS.Timeout | null>(null);
   const app = useApp();
 
-  const pendingTranscriptOpsRef = useRef<Array<() => void>>([]);
-  const transcriptFlushTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-  // transcriptRef 让 deltaBuffer.onFlush 拿最新 transcript（useTranscript 每次 render 返回新对象，
-  // 直接闭包会过期）
-  const transcriptRef = useRef(transcript);
-  transcriptRef.current = transcript;
-
-  const deltaBufferRef = useRef<DeltaBuffer | null>(null);
-  if (deltaBufferRef.current === null) {
-    deltaBufferRef.current = createDeltaBuffer({
-      flushMs: ASSISTANT_DELTA_FLUSH_MS,
-      flushChars: ASSISTANT_DELTA_FLUSH_CHARS,
-      onFlush: (id, text) => {
-        // NOTE: synchronous setState (no startTransition). startTransition
-        // splits the update into a low-priority commit, but Ink's <Static>
-        // permanently mounts items on first render — if finishAssistant runs
-        // in a higher-priority commit before the deferred token append, the
-        // assistant ends up rendered with text="" and the token update never
-        // surfaces. React 18 still auto-batches synchronous setState within
-        // the same microtask, so we keep most of the perf win.
-        transcriptRef.current.appendToken(id, text);
-      },
-    });
-  }
-
-  const flushTranscriptOps = useCallback((): void => {
-    const ops = pendingTranscriptOpsRef.current;
-    pendingTranscriptOpsRef.current = [];
-    if (transcriptFlushTimerRef.current !== null) {
-      clearTimeout(transcriptFlushTimerRef.current);
-      transcriptFlushTimerRef.current = null;
-    }
-    if (ops.length === 0) return;
-    // Synchronous (no startTransition) — see deltaBuffer onFlush comment above
-    // for why <Static> rules out deferred commits here.
-    for (const op of ops) op();
-  }, []);
-
-  const queueTranscriptOp = useCallback(
-    (op: () => void): void => {
-      pendingTranscriptOpsRef.current.push(op);
-      if (transcriptFlushTimerRef.current === null) {
-        transcriptFlushTimerRef.current = setTimeout(
-          flushTranscriptOps,
-          TRANSCRIPT_OP_FLUSH_MS,
-        );
-      }
-    },
-    [flushTranscriptOps],
-  );
-
-  // NOTE: useDeferredValue removed in v0.6.2 — it lets React render with a
-  // stale snapshot of items, which combined with Ink's <Static> "render once
-  // per item" semantics causes streaming assistant text to vanish (the stale
-  // empty assistant gets permanently mounted before the token update lands).
-  // The deltaBuffer 50ms batch is what actually gives us most of the perf
-  // win; useDeferredValue was a layer too far.
+  // v0.6.3: deltaBuffer + queueTranscriptOp removed. The 50ms batch made
+  // streaming visually feel "all at once" (terminal IO + bridge buffering
+  // already absorbs micro-batching) and the ops queue added no real win.
+  // Every text_delta / tool_call_started / tool_call_completed now goes
+  // through transcript.* synchronously, matching v0.5.0 behavior.
 
   // telemetry subscription
   useEffect(() => {
@@ -245,16 +188,6 @@ function AppInner({ args }: AppProps): React.JSX.Element {
     });
     void client.telemetrySubscribe(true).catch(() => {});
   }, [client]);
-
-  useEffect(() => {
-    return () => {
-      deltaBufferRef.current?.dispose();
-      if (transcriptFlushTimerRef.current !== null) {
-        clearTimeout(transcriptFlushTimerRef.current);
-        transcriptFlushTimerRef.current = null;
-      }
-    };
-  }, []);
 
   const COMMANDS: string[] = [
     "/help",
@@ -424,7 +357,7 @@ function AppInner({ args }: AppProps): React.JSX.Element {
               const chunk = typeof ev.text === "string" ? ev.text : "";
               if (chunk.length === 0) return;
               setWaitingForFirstToken(false);
-              deltaBufferRef.current?.push(assistantId, chunk);
+              transcript.appendToken(assistantId, chunk);
               return;
             }
 
@@ -433,8 +366,7 @@ function AppInner({ args }: AppProps): React.JSX.Element {
               const invocationId =
                 eventInvocationId(ev) ?? `inv-${Math.random().toString(36).slice(2)}`;
               const toolName = eventToolName(ev);
-              const args = ev.args ?? null;
-              queueTranscriptOp(() => transcript.appendTool(invocationId, toolName, args));
+              transcript.appendTool(invocationId, toolName, ev.args ?? null);
               if (toolName === "todo_write") {
                 const parsed = parseTodos(ev.args);
                 if (parsed !== null) setLatestTodos(parsed);
@@ -445,9 +377,11 @@ function AppInner({ args }: AppProps): React.JSX.Element {
             if (kind === "tool_call_completed" || kind === "tool_result") {
               const invocationId = eventInvocationId(ev);
               if (invocationId === undefined) return;
-              const text = eventResultText(ev);
-              const isErr = eventIsError(ev);
-              queueTranscriptOp(() => transcript.appendToolResult(invocationId, text, isErr));
+              transcript.appendToolResult(
+                invocationId,
+                eventResultText(ev),
+                eventIsError(ev),
+              );
               return;
             }
           });
@@ -459,8 +393,6 @@ function AppInner({ args }: AppProps): React.JSX.Element {
             if (sessionId === null) setRuntimeError(e as Error);
           }
         } finally {
-          deltaBufferRef.current?.flush();
-          flushTranscriptOps();
           if (handleRef.current === handle) handleRef.current = null;
           if (activeAssistantIdRef.current === assistantId) {
             activeAssistantIdRef.current = null;
