@@ -13,7 +13,14 @@
  */
 
 import type React from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import {
   BridgeCancelled,
@@ -34,12 +41,16 @@ import {
 import { Spinner } from "./components/Spinner.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { TodoPanel, parseTodos, type TodoItem } from "./components/TodoPanel.js";
+import { createDeltaBuffer, type DeltaBuffer } from "./lib/deltaBuffer.js";
 import { messagesToTranscript } from "./lib/replay.js";
 import { ThemeProvider, useTheme } from "./theme/ThemeContext.js";
 import type { CliArgs } from "./types.js";
 
 const VERSION = "0.4.0";
 const EXIT_HOLD_MS = 100;
+const ASSISTANT_DELTA_FLUSH_MS = 50;
+const ASSISTANT_DELTA_FLUSH_CHARS = 384;
+const TRANSCRIPT_OP_FLUSH_MS = 50;
 
 export interface AppProps {
   args: CliArgs;
@@ -169,6 +180,57 @@ function AppInner({ args }: AppProps): React.JSX.Element {
   const exitTimerRef = useRef<NodeJS.Timeout | null>(null);
   const app = useApp();
 
+  const pendingTranscriptOpsRef = useRef<Array<() => void>>([]);
+  const transcriptFlushTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // transcriptRef 让 deltaBuffer.onFlush 拿最新 transcript（useTranscript 每次 render 返回新对象，
+  // 直接闭包会过期）
+  const transcriptRef = useRef(transcript);
+  transcriptRef.current = transcript;
+
+  const deltaBufferRef = useRef<DeltaBuffer | null>(null);
+  if (deltaBufferRef.current === null) {
+    deltaBufferRef.current = createDeltaBuffer({
+      flushMs: ASSISTANT_DELTA_FLUSH_MS,
+      flushChars: ASSISTANT_DELTA_FLUSH_CHARS,
+      onFlush: (id, text) => {
+        startTransition(() => {
+          transcriptRef.current.appendToken(id, text);
+        });
+      },
+    });
+  }
+
+  const flushTranscriptOps = useCallback((): void => {
+    const ops = pendingTranscriptOpsRef.current;
+    pendingTranscriptOpsRef.current = [];
+    if (transcriptFlushTimerRef.current !== null) {
+      clearTimeout(transcriptFlushTimerRef.current);
+      transcriptFlushTimerRef.current = null;
+    }
+    if (ops.length === 0) return;
+    startTransition(() => {
+      for (const op of ops) op();
+    });
+  }, []);
+
+  const queueTranscriptOp = useCallback(
+    (op: () => void): void => {
+      pendingTranscriptOpsRef.current.push(op);
+      if (transcriptFlushTimerRef.current === null) {
+        transcriptFlushTimerRef.current = setTimeout(
+          flushTranscriptOps,
+          TRANSCRIPT_OP_FLUSH_MS,
+        );
+      }
+    },
+    [flushTranscriptOps],
+  );
+
+  const deferredItems = useDeferredValue(transcript.items);
+  const deferredTodos = useDeferredValue(latestTodos);
+  const deferredTelemetry = useDeferredValue(telemetry);
+
   // telemetry subscription
   useEffect(() => {
     if (client === null) return;
@@ -182,6 +244,16 @@ function AppInner({ args }: AppProps): React.JSX.Element {
     });
     void client.telemetrySubscribe(true).catch(() => {});
   }, [client]);
+
+  useEffect(() => {
+    return () => {
+      deltaBufferRef.current?.dispose();
+      if (transcriptFlushTimerRef.current !== null) {
+        clearTimeout(transcriptFlushTimerRef.current);
+        transcriptFlushTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const COMMANDS: string[] = [
     "/help",
@@ -351,7 +423,7 @@ function AppInner({ args }: AppProps): React.JSX.Element {
               const chunk = typeof ev.text === "string" ? ev.text : "";
               if (chunk.length === 0) return;
               setWaitingForFirstToken(false);
-              transcript.appendToken(assistantId, chunk);
+              deltaBufferRef.current?.push(assistantId, chunk);
               return;
             }
 
@@ -360,7 +432,8 @@ function AppInner({ args }: AppProps): React.JSX.Element {
               const invocationId =
                 eventInvocationId(ev) ?? `inv-${Math.random().toString(36).slice(2)}`;
               const toolName = eventToolName(ev);
-              transcript.appendTool(invocationId, toolName, ev.args ?? null);
+              const args = ev.args ?? null;
+              queueTranscriptOp(() => transcript.appendTool(invocationId, toolName, args));
               if (toolName === "todo_write") {
                 const parsed = parseTodos(ev.args);
                 if (parsed !== null) setLatestTodos(parsed);
@@ -371,7 +444,9 @@ function AppInner({ args }: AppProps): React.JSX.Element {
             if (kind === "tool_call_completed" || kind === "tool_result") {
               const invocationId = eventInvocationId(ev);
               if (invocationId === undefined) return;
-              transcript.appendToolResult(invocationId, eventResultText(ev), eventIsError(ev));
+              const text = eventResultText(ev);
+              const isErr = eventIsError(ev);
+              queueTranscriptOp(() => transcript.appendToolResult(invocationId, text, isErr));
               return;
             }
           });
@@ -383,6 +458,8 @@ function AppInner({ args }: AppProps): React.JSX.Element {
             if (sessionId === null) setRuntimeError(e as Error);
           }
         } finally {
+          deltaBufferRef.current?.flush();
+          flushTranscriptOps();
           if (handleRef.current === handle) handleRef.current = null;
           if (activeAssistantIdRef.current === assistantId) {
             activeAssistantIdRef.current = null;
@@ -591,13 +668,13 @@ function AppInner({ args }: AppProps): React.JSX.Element {
   return (
     <Box flexDirection="column">
       <ConversationView
-        items={transcript.items}
+        items={deferredItems}
         activeAssistantId={activeAssistantIdRef.current}
         showWelcome={showWelcome}
         version={VERSION}
         fullToolOutput={activeArgs.fullToolOutput}
       />
-      {latestTodos !== null && <TodoPanel todos={latestTodos} />}
+      {deferredTodos !== null && <TodoPanel todos={deferredTodos} />}
       {showPicker && <CommandPicker hints={commandHints} selectedIndex={pickerIndex} />}
       <Spinner active={waitingForFirstToken} />
       {permission !== null && (
@@ -687,7 +764,7 @@ function AppInner({ args }: AppProps): React.JSX.Element {
         profile={activeArgs.profile}
         sessionIdShort={sessionShort}
         yolo={activeArgs.yolo}
-        telemetry={telemetry}
+        telemetry={deferredTelemetry}
         cancelHint={cancelHint}
       />
       <Footer
