@@ -7,6 +7,40 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
+## v0.5.0 — CommandPicker + 键位对齐 (Phase 14b)
+
+- **CommandPicker**：输入 `/` 浮出补全菜单，↑↓ 选择、Tab 补全、Enter 提交、Esc 关闭
+- **`/theme` 命令**：通过 SelectModal 切换 default/dark/minimal，立即生效
+- **键位 1:1 对齐 OpenHarness**：
+  - **Ctrl+C 单击 exit**（idle 时直接退出；busy 时取消正在运行的请求）—— **行为变更**：旧版需双击在 2 秒内才退出
+  - 数字键 1-9 在 SelectModal 内快速选第 N 项
+  - Esc 双击 500ms 内清空当前输入
+- **PromptInput 重构**：value/onChange/onSubmit 受控；↑↓ history 移到 App.tsx
+- **键位集中化**：App.tsx 单个 useInput 处理所有全局键位，互斥优先级清晰
+- 删除 `src/hooks/useKeybinds.ts`（合并入 App.tsx）
+
+### BREAKING UX
+
+`Ctrl+C` 在 idle 时**单击退出**（不再有 "press Ctrl+C again to exit" 二段保护）。
+
+### 手工 smoke checklist（合并前验证）
+
+```bash
+pnpm start                       # 启动 REPL
+```
+
+逐条：
+1. 输入 `/` → CommandPicker 浮出
+2. ↑↓ 在 picker 内移动选中态
+3. Tab 在 picker → 补全选中项到 input
+4. Enter 在 picker → 提交选中项
+5. Esc 在 picker → 清空 input
+6. 普通输入下 ↑↓ 走 history（draft 保护）
+7. 输入非空时 Esc 双击 500ms 内清空
+8. `/theme` 触发 SelectModal，选 `dark` → 配色立刻变蓝紫
+9. modal 内数字 1/2/3 直接快选
+10. Ctrl+C busy → cancel；Ctrl+C idle → exit
+
 ## v0.4.0 — OpenHarness 1:1 visual refresh (Phase 14a)
 
 - **单一 `App.tsx`**：`modes/ReplMode` 与 `OneShotMode` 二分消解；`oh-tui "hi"` 与 `--prompt "hi" --exit-on-done` 等价
@@ -16,12 +50,6 @@
 - **StatusBar 重做**：`─` 分隔线 + `│` 分隔段；按数据存在性动态展段；新增 tokens 段
 - **Footer**：单行环境信息（model / provider / auth / yolo / session）
 - **ToolCallDisplay**：替代 ToolCallView，配对 tool + tool_result 渲染
-
-### 不在本次范围（明确预告）
-
-- CommandPicker / slash 命令补全 → **Phase 14b**
-- `/theme` 命令、Tab 补全、数字键快选、Esc 双击清输入、Ctrl+C 单击 exit → **Phase 14b**
-- assistant delta buffering、`useDeferredValue`、SidePanel → **Phase 14c**
 
 ## v0.3.1 — bug fix
 
