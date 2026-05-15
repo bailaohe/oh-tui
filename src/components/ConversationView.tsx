@@ -65,15 +65,14 @@ export function ConversationView({
   version,
   fullToolOutput,
 }: ConversationViewProps): React.JSX.Element {
-  // Cut at the active assistant turn. Items before it are immutable from
-  // Ink's perspective (Static-safe); items from it onwards may still mutate.
+  // Cut at the active streaming row (assistant OR thinking). Items before
+  // it are immutable from Ink's perspective (Static-safe); items from it
+  // onwards may still mutate as tokens stream in.
   let cutIdx: number;
   if (activeAssistantId === null) {
     cutIdx = items.length;
   } else {
-    const idx = items.findIndex(
-      (it) => it.role === "assistant" && it.id === activeAssistantId,
-    );
+    const idx = items.findIndex((it) => it.id === activeAssistantId);
     cutIdx = idx === -1 ? items.length : idx;
   }
   const completed = items.slice(0, cutIdx);

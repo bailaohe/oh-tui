@@ -38,7 +38,7 @@ import { messagesToTranscript } from "./lib/replay.js";
 import { ThemeProvider, useTheme } from "./theme/ThemeContext.js";
 import type { CliArgs } from "./types.js";
 
-const VERSION = "0.7.1";
+const VERSION = "0.7.2";
 const EXIT_HOLD_MS = 100;
 
 export interface AppProps {
@@ -313,16 +313,37 @@ function AppInner({ args }: AppProps): React.JSX.Element {
 
       setHistory((h) => [...h, prompt]);
       transcript.appendUser(prompt);
-      const assistantId = transcript.appendAssistant();
-      activeAssistantIdRef.current = assistantId;
-      setActiveBump((n) => n + 1);
       setWaitingForFirstToken(true);
 
       void (async () => {
         let handle: SendMessageHandle | null = null;
-        // Tracks the currently-streaming thinking block (if any). Declared
-        // outside try so the finally block can drain it on early exit.
+        // The assistant block is created lazily on the first text_delta so
+        // that any preceding thinking_delta stream (DeepSeek reasoner etc.)
+        // appears ABOVE the assistant text in source order. Without lazy
+        // creation, the empty assistant placeholder is pushed first and the
+        // thinking block stacks below it visually.
+        let assistantId: string | null = null;
+        // Tracks whichever streaming row is currently growing (assistant or
+        // thinking). Any non-matching event finalizes it. Declared outside
+        // try so finally can drain on early exit.
+        let activeStreamingId: string | null = null;
         let activeThinkingId: string | null = null;
+
+        const finalizeStreaming = (): void => {
+          if (activeStreamingId !== null) {
+            transcript.finishAssistant(activeStreamingId);
+            activeStreamingId = null;
+          }
+        };
+
+        const ensureAssistant = (): string => {
+          if (assistantId === null) {
+            assistantId = transcript.appendAssistant();
+            activeAssistantIdRef.current = assistantId;
+            setActiveBump((n) => n + 1);
+          }
+          return assistantId;
+        };
         try {
           let sid = sessionId;
           if (sid === null) {
@@ -351,8 +372,11 @@ function AppInner({ args }: AppProps): React.JSX.Element {
               }),
           );
 
-          // Non-thinking events finalize the active thinking block — that's
-          // how we separate consecutive thinking spans across the same turn.
+          // Streaming rows (thinking + assistant) are lazily created in
+          // source order: whichever delta arrives first wins the slot. When
+          // a different streaming kind shows up, we finalize the previous
+          // one before opening the new one. Tool events finalize any open
+          // streaming row before being pushed.
           handle.onEvent((raw: unknown) => {
             if (raw === null || typeof raw !== "object") return;
             const ev = raw as StreamEventLike;
@@ -362,29 +386,37 @@ function AppInner({ args }: AppProps): React.JSX.Element {
               const chunk = typeof ev.text === "string" ? ev.text : "";
               if (chunk.length === 0) return;
               setWaitingForFirstToken(false);
-              if (activeThinkingId === null) {
+              if (activeStreamingId !== activeThinkingId || activeThinkingId === null) {
+                finalizeStreaming();
                 activeThinkingId = transcript.appendThinking();
+                activeStreamingId = activeThinkingId;
+                // Mirror onto the ref so ConversationView can keep this
+                // streaming row in the dynamic (non-Static) region.
+                activeAssistantIdRef.current = activeStreamingId;
+                setActiveBump((n) => n + 1);
               }
               transcript.appendToken(activeThinkingId, chunk);
               return;
-            }
-
-            // Any non-thinking event closes out the active thinking block.
-            if (activeThinkingId !== null) {
-              transcript.finishAssistant(activeThinkingId);
-              activeThinkingId = null;
             }
 
             if (kind === "text_delta") {
               const chunk = typeof ev.text === "string" ? ev.text : "";
               if (chunk.length === 0) return;
               setWaitingForFirstToken(false);
-              transcript.appendToken(assistantId, chunk);
+              if (activeStreamingId !== assistantId || assistantId === null) {
+                finalizeStreaming();
+                activeThinkingId = null;
+                const aid = ensureAssistant();
+                activeStreamingId = aid;
+              }
+              transcript.appendToken(assistantId!, chunk);
               return;
             }
 
             if (kind === "tool_call_started" || kind === "tool_use") {
               setWaitingForFirstToken(false);
+              finalizeStreaming();
+              activeThinkingId = null;
               const invocationId =
                 eventInvocationId(ev) ?? `inv-${Math.random().toString(36).slice(2)}`;
               const toolName = eventToolName(ev);
@@ -416,16 +448,31 @@ function AppInner({ args }: AppProps): React.JSX.Element {
           }
         } finally {
           if (handleRef.current === handle) handleRef.current = null;
-          if (activeAssistantIdRef.current === assistantId) {
+          // Clear the dynamic-region ref whether it points at an assistant
+          // or a thinking row; either way the turn is over.
+          if (
+            activeAssistantIdRef.current === assistantId ||
+            activeAssistantIdRef.current === activeThinkingId ||
+            activeAssistantIdRef.current === activeStreamingId
+          ) {
             activeAssistantIdRef.current = null;
             setActiveBump((n) => n + 1);
           }
           setWaitingForFirstToken(false);
-          if (activeThinkingId !== null) {
-            transcript.finishAssistant(activeThinkingId);
-            activeThinkingId = null;
+          // Drain any still-open streaming row (defensive — onEvent should
+          // have closed them, but a cancellation or error mid-stream could
+          // leave one open).
+          if (activeStreamingId !== null) {
+            transcript.finishAssistant(activeStreamingId);
+            activeStreamingId = null;
           }
-          transcript.finishAssistant(assistantId);
+          activeThinkingId = null;
+          // Mark the assistant row done if it was ever opened. If the turn
+          // ended with only thinking (no assistant text), there's no row to
+          // finalize and we skip silently.
+          if (assistantId !== null) {
+            transcript.finishAssistant(assistantId);
+          }
           if (activeArgs.exitOnDone && sentInitialRef.current) {
             if (exitTimerRef.current !== null) clearTimeout(exitTimerRef.current);
             exitTimerRef.current = setTimeout(() => app.exit(), EXIT_HOLD_MS);
