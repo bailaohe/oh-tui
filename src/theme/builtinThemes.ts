@@ -113,8 +113,11 @@ export const BUILTIN_THEMES: Record<string, ThemeConfig> = {
 };
 
 export function resolveTheme(name: string | undefined): ThemeConfig {
-  if (name !== undefined && BUILTIN_THEMES[name] !== undefined) {
-    return BUILTIN_THEMES[name]!;
+  if (name !== undefined) {
+    const theme = BUILTIN_THEMES[name];
+    if (theme !== undefined) {
+      return theme;
+    }
   }
   return defaultTheme;
 }

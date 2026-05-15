@@ -7,6 +7,22 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
+## v0.4.0 — OpenHarness 1:1 visual refresh (Phase 14a)
+
+- **单一 `App.tsx`**：`modes/ReplMode` 与 `OneShotMode` 二分消解；`oh-tui "hi"` 与 `--prompt "hi" --exit-on-done` 等价
+- **主题系统**：`--theme default | dark | minimal`（`/theme` 命令在 14b 落地）
+- **WelcomeBanner**：ASCII LOGO + 版本号 + 命令提示
+- **TranscriptItem 扁平化**：`tool` / `tool_result` 升为顶层行，由 `invocationId` 显式配对；ConversationView 用 `<Static>` 切分已完成项 + 动态层
+- **StatusBar 重做**：`─` 分隔线 + `│` 分隔段；按数据存在性动态展段；新增 tokens 段
+- **Footer**：单行环境信息（model / provider / auth / yolo / session）
+- **ToolCallDisplay**：替代 ToolCallView，配对 tool + tool_result 渲染
+
+### 不在本次范围（明确预告）
+
+- CommandPicker / slash 命令补全 → **Phase 14b**
+- `/theme` 命令、Tab 补全、数字键快选、Esc 双击清输入、Ctrl+C 单击 exit → **Phase 14b**
+- assistant delta buffering、`useDeferredValue`、SidePanel → **Phase 14c**
+
 ## v0.3.1 — bug fix
 
 - **Fix `/exit` hang**: `cli.tsx` now awaits `inst.waitUntilExit()` and
