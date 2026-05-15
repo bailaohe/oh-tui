@@ -1,6 +1,6 @@
 {
   "name": "oh-tui",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Ink TUI for the oh-mini coding agent",
   "type": "module",
   "bin": {

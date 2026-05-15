@@ -13,14 +13,7 @@
  */
 
 import type React from "react";
-import {
-  startTransition,
-  useCallback,
-  useDeferredValue,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import {
   BridgeCancelled,
@@ -46,7 +39,7 @@ import { messagesToTranscript } from "./lib/replay.js";
 import { ThemeProvider, useTheme } from "./theme/ThemeContext.js";
 import type { CliArgs } from "./types.js";
 
-const VERSION = "0.6.1";
+const VERSION = "0.6.2";
 const EXIT_HOLD_MS = 100;
 const ASSISTANT_DELTA_FLUSH_MS = 50;
 const ASSISTANT_DELTA_FLUSH_CHARS = 384;
@@ -194,9 +187,14 @@ function AppInner({ args }: AppProps): React.JSX.Element {
       flushMs: ASSISTANT_DELTA_FLUSH_MS,
       flushChars: ASSISTANT_DELTA_FLUSH_CHARS,
       onFlush: (id, text) => {
-        startTransition(() => {
-          transcriptRef.current.appendToken(id, text);
-        });
+        // NOTE: synchronous setState (no startTransition). startTransition
+        // splits the update into a low-priority commit, but Ink's <Static>
+        // permanently mounts items on first render — if finishAssistant runs
+        // in a higher-priority commit before the deferred token append, the
+        // assistant ends up rendered with text="" and the token update never
+        // surfaces. React 18 still auto-batches synchronous setState within
+        // the same microtask, so we keep most of the perf win.
+        transcriptRef.current.appendToken(id, text);
       },
     });
   }
@@ -209,9 +207,9 @@ function AppInner({ args }: AppProps): React.JSX.Element {
       transcriptFlushTimerRef.current = null;
     }
     if (ops.length === 0) return;
-    startTransition(() => {
-      for (const op of ops) op();
-    });
+    // Synchronous (no startTransition) — see deltaBuffer onFlush comment above
+    // for why <Static> rules out deferred commits here.
+    for (const op of ops) op();
   }, []);
 
   const queueTranscriptOp = useCallback(
@@ -227,9 +225,12 @@ function AppInner({ args }: AppProps): React.JSX.Element {
     [flushTranscriptOps],
   );
 
-  const deferredItems = useDeferredValue(transcript.items);
-  const deferredTodos = useDeferredValue(latestTodos);
-  const deferredTelemetry = useDeferredValue(telemetry);
+  // NOTE: useDeferredValue removed in v0.6.2 — it lets React render with a
+  // stale snapshot of items, which combined with Ink's <Static> "render once
+  // per item" semantics causes streaming assistant text to vanish (the stale
+  // empty assistant gets permanently mounted before the token update lands).
+  // The deltaBuffer 50ms batch is what actually gives us most of the perf
+  // win; useDeferredValue was a layer too far.
 
   // telemetry subscription
   useEffect(() => {
@@ -668,13 +669,13 @@ function AppInner({ args }: AppProps): React.JSX.Element {
   return (
     <Box flexDirection="column">
       <ConversationView
-        items={deferredItems}
+        items={transcript.items}
         activeAssistantId={activeAssistantIdRef.current}
         showWelcome={showWelcome}
         version={VERSION}
         fullToolOutput={activeArgs.fullToolOutput}
       />
-      {deferredTodos !== null && <TodoPanel todos={deferredTodos} />}
+      {latestTodos !== null && <TodoPanel todos={latestTodos} />}
       {showPicker && <CommandPicker hints={commandHints} selectedIndex={pickerIndex} />}
       <Spinner active={waitingForFirstToken} />
       {permission !== null && (
@@ -764,7 +765,7 @@ function AppInner({ args }: AppProps): React.JSX.Element {
         profile={activeArgs.profile}
         sessionIdShort={sessionShort}
         yolo={activeArgs.yolo}
-        telemetry={deferredTelemetry}
+        telemetry={telemetry}
         cancelHint={cancelHint}
       />
       <Footer
