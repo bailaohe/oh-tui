@@ -13,6 +13,8 @@ const VERSION = "0.1.0";
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
     prompt: null,
+    exitOnDone: false,
+    theme: "default",
     provider: null,
     profile: null,
     model: null,
