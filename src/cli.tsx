@@ -8,7 +8,7 @@ import { App } from "./App.js";
 import { teardownActiveBridge } from "./hooks/useBridgeClient.js";
 import type { CliArgs } from "./types.js";
 
-const VERSION = "0.6.3";
+const VERSION = "0.7.0";
 
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {

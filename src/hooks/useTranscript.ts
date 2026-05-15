@@ -44,21 +44,34 @@ export function useTranscript() {
     return id;
   }, []);
 
-  const appendToken = useCallback((assistantId: string, chunk: string): void => {
+  const appendThinking = useCallback((): string => {
+    const id = nextId();
+    setItems((prev) => [
+      ...prev,
+      { id, role: "thinking", text: "", done: false },
+    ]);
+    return id;
+  }, []);
+
+  // appendToken / finishAssistant accept either assistant or thinking ids —
+  // both are streaming text containers with identical fields.
+  const appendToken = useCallback((streamingId: string, chunk: string): void => {
     if (chunk.length === 0) return;
     setItems((prev) =>
       prev.map((item) =>
-        item.role === "assistant" && item.id === assistantId
+        (item.role === "assistant" || item.role === "thinking") &&
+        item.id === streamingId
           ? { ...item, text: item.text + chunk }
           : item,
       ),
     );
   }, []);
 
-  const finishAssistant = useCallback((assistantId: string): void => {
+  const finishAssistant = useCallback((streamingId: string): void => {
     setItems((prev) =>
       prev.map((item) =>
-        item.role === "assistant" && item.id === assistantId
+        (item.role === "assistant" || item.role === "thinking") &&
+        item.id === streamingId
           ? { ...item, done: true }
           : item,
       ),
@@ -131,6 +144,7 @@ export function useTranscript() {
     itemsRef,
     appendUser,
     appendAssistant,
+    appendThinking,
     appendToken,
     finishAssistant,
     appendTool,

@@ -38,7 +38,7 @@ import { messagesToTranscript } from "./lib/replay.js";
 import { ThemeProvider, useTheme } from "./theme/ThemeContext.js";
 import type { CliArgs } from "./types.js";
 
-const VERSION = "0.6.3";
+const VERSION = "0.7.0";
 const EXIT_HOLD_MS = 100;
 
 export interface AppProps {
@@ -320,6 +320,9 @@ function AppInner({ args }: AppProps): React.JSX.Element {
 
       void (async () => {
         let handle: SendMessageHandle | null = null;
+        // Tracks the currently-streaming thinking block (if any). Declared
+        // outside try so the finally block can drain it on early exit.
+        let activeThinkingId: string | null = null;
         try {
           let sid = sessionId;
           if (sid === null) {
@@ -348,10 +351,29 @@ function AppInner({ args }: AppProps): React.JSX.Element {
               }),
           );
 
+          // Non-thinking events finalize the active thinking block — that's
+          // how we separate consecutive thinking spans across the same turn.
           handle.onEvent((raw: unknown) => {
             if (raw === null || typeof raw !== "object") return;
             const ev = raw as StreamEventLike;
             const kind = ev.kind ?? "";
+
+            if (kind === "thinking_delta") {
+              const chunk = typeof ev.text === "string" ? ev.text : "";
+              if (chunk.length === 0) return;
+              setWaitingForFirstToken(false);
+              if (activeThinkingId === null) {
+                activeThinkingId = transcript.appendThinking();
+              }
+              transcript.appendToken(activeThinkingId, chunk);
+              return;
+            }
+
+            // Any non-thinking event closes out the active thinking block.
+            if (activeThinkingId !== null) {
+              transcript.finishAssistant(activeThinkingId);
+              activeThinkingId = null;
+            }
 
             if (kind === "text_delta") {
               const chunk = typeof ev.text === "string" ? ev.text : "";
@@ -399,6 +421,10 @@ function AppInner({ args }: AppProps): React.JSX.Element {
             setActiveBump((n) => n + 1);
           }
           setWaitingForFirstToken(false);
+          if (activeThinkingId !== null) {
+            transcript.finishAssistant(activeThinkingId);
+            activeThinkingId = null;
+          }
           transcript.finishAssistant(assistantId);
           if (activeArgs.exitOnDone && sentInitialRef.current) {
             if (exitTimerRef.current !== null) clearTimeout(exitTimerRef.current);
@@ -599,7 +625,7 @@ function AppInner({ args }: AppProps): React.JSX.Element {
   const showWelcome = transcript.items.length === 0 && args.prompt === null;
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width="100%">
       <ConversationView
         items={transcript.items}
         activeAssistantId={activeAssistantIdRef.current}

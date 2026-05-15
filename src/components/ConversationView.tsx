@@ -136,6 +136,23 @@ function GroupBlock({
       </Box>
     );
   }
+  if (item.role === "thinking") {
+    // Streamed alongside / before assistant text. Rendered dim + indented so
+    // it visually recedes from the real reply.
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text dimColor bold>
+          ✻ Thinking
+        </Text>
+        <Box marginLeft={2}>
+          <Text dimColor>
+            {item.text}
+            {item.done !== true ? "▍" : ""}
+          </Text>
+        </Box>
+      </Box>
+    );
+  }
   if (item.role === "tool") {
     // Unpaired tool — still running (no matching result yet).
     return (

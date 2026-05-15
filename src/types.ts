@@ -26,6 +26,7 @@ export type TranscriptRole =
   | "system"
   | "user"
   | "assistant"
+  | "thinking"
   | "tool"
   | "tool_result";
 

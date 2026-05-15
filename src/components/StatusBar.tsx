@@ -9,6 +9,7 @@
 import type React from "react";
 import { Box, Text } from "ink";
 import { useTheme } from "../theme/ThemeContext.js";
+import { useTerminalWidth } from "../hooks/useTerminalWidth.js";
 
 export interface StatusBarProps {
   provider: string | null;
@@ -36,6 +37,7 @@ export function StatusBar({
   cancelHint,
 }: StatusBarProps): React.JSX.Element {
   const { theme } = useTheme();
+  const width = useTerminalWidth();
 
   const segments: React.ReactNode[] = [];
 
@@ -101,7 +103,7 @@ export function StatusBar({
 
   return (
     <Box flexDirection="column" width="100%">
-      <Text dimColor>{"─".repeat(60)}</Text>
+      <Text dimColor>{"─".repeat(Math.max(width, 1))}</Text>
       <Box>
         <Text>
           {segments.flatMap((seg, i) =>
