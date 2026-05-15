@@ -8,7 +8,7 @@ import { App } from "./App.js";
 import { teardownActiveBridge } from "./hooks/useBridgeClient.js";
 import type { CliArgs } from "./types.js";
 
-const VERSION = "0.4.0";
+const VERSION = "0.6.1";
 
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
@@ -28,6 +28,13 @@ function parseArgs(argv: string[]): CliArgs {
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
+    if (a === "--") {
+      // pnpm v8+ forwards a literal `--` token to scripts when invoked as
+      // `pnpm start -- --foo` (npm-style passthrough marker, not POSIX
+      // positional separator — subsequent flags should still parse as flags).
+      // Just skip it.
+      continue;
+    }
     if (a === "--prompt") {
       args.prompt = argv[++i] ?? null;
     } else if (a === "--exit-on-done") {
