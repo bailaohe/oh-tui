@@ -14,6 +14,7 @@
 
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { appendFileSync } from "node:fs";
 import { Box, Text, useApp, useInput } from "ink";
 import {
   BridgeCancelled,
@@ -38,8 +39,21 @@ import { messagesToTranscript } from "./lib/replay.js";
 import { ThemeProvider, useTheme } from "./theme/ThemeContext.js";
 import type { CliArgs } from "./types.js";
 
-const VERSION = "0.7.3";
+const VERSION = "0.7.4";
 const EXIT_HOLD_MS = 100;
+
+// Set OH_TUI_DEBUG to a file path to dump bridge stream events for analysis.
+// Example: OH_TUI_DEBUG=/tmp/oh-tui.log pnpm start
+const DEBUG_PATH = process.env.OH_TUI_DEBUG;
+const dbg = DEBUG_PATH
+  ? (msg: string): void => {
+      try {
+        appendFileSync(DEBUG_PATH, `${new Date().toISOString()} ${msg}\n`);
+      } catch {
+        // ignore — debug logging must never crash the UI
+      }
+    }
+  : (_msg: string): void => {};
 
 export interface AppProps {
   args: CliArgs;
@@ -403,6 +417,10 @@ function AppInner({ args }: AppProps): React.JSX.Element {
             if (raw === null || typeof raw !== "object") return;
             const ev = raw as StreamEventLike;
             const kind = ev.kind ?? "";
+
+            dbg(
+              `event kind=${kind} text=${JSON.stringify(typeof ev.text === "string" ? ev.text.slice(0, 60) : null)} thinkingId=${thinkingId} assistantId=${assistantId} cursor=${activeCursor}`,
+            );
 
             if (kind === "thinking_delta") {
               const chunk = typeof ev.text === "string" ? ev.text : "";
