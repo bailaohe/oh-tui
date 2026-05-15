@@ -8,7 +8,7 @@ import { App } from "./App.js";
 import { teardownActiveBridge } from "./hooks/useBridgeClient.js";
 import type { CliArgs } from "./types.js";
 
-const VERSION = "0.1.0";
+const VERSION = "0.4.0";
 
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
@@ -28,7 +28,13 @@ function parseArgs(argv: string[]): CliArgs {
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    if (a === "--provider") {
+    if (a === "--prompt") {
+      args.prompt = argv[++i] ?? null;
+    } else if (a === "--exit-on-done") {
+      args.exitOnDone = true;
+    } else if (a === "--theme") {
+      args.theme = argv[++i] ?? "default";
+    } else if (a === "--provider") {
       args.provider = argv[++i] ?? null;
     } else if (a === "--profile") {
       args.profile = argv[++i] ?? null;
@@ -62,7 +68,11 @@ function parseArgs(argv: string[]): CliArgs {
     }
   }
 
-  if (rest.length > 0) args.prompt = rest.join(" ");
+  // Positional argument = legacy OneShotMode behavior: --prompt + --exit-on-done.
+  if (rest.length > 0 && args.prompt === null) {
+    args.prompt = rest.join(" ");
+    args.exitOnDone = true;
+  }
   return args;
 }
 
@@ -71,15 +81,20 @@ function printHelp(): void {
 
 Usage:
   oh-tui                       start interactive REPL
-  oh-tui "your prompt here"    one-shot mode
+  oh-tui "your prompt here"    legacy one-shot mode (= --prompt X --exit-on-done)
+  oh-tui --prompt "X"          inject initial prompt then stay in REPL
+  oh-tui --prompt "X" --exit-on-done   inject initial prompt then exit when done
 
 Options:
-  --provider X                 provider name (e.g. anthropic, openai)
+  --prompt <text>              initial prompt (auto-submitted when bridge ready)
+  --exit-on-done               exit after the first turn finishes
+  --theme <name>               default | dark | minimal (default: default)
+  --provider X                 provider name
   --profile P                  credentials profile
   --model M                    model override
   --framing F                  newline (default) | content-length
   --bridge-bin PATH            override path to the \`oh\` executable
-  --yolo                       skip permission dialogs (auto-approve tools)
+  --yolo                       skip permission dialogs
   --full-tool-output           disable 5-line tool result truncation
   -h, --help                   show this help and exit
   --version                    print version and exit`);
@@ -87,15 +102,8 @@ Options:
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  // exitOnCtrlC=false lets `useCancelBinding` claim Ctrl+C so it can fire
-  // `$/cancelRequest` instead of nuking the process mid-stream. If no
-  // in-flight handle exists, modes still fall through to a normal exit
-  // (REPL via `/exit`, OneShot after `handle.done`).
   const inst = render(<App args={args} />, { exitOnCtrlC: false });
   await inst.waitUntilExit();
-  // Ink has unmounted; useEffect cleanup published the live client to a
-  // module-level singleton. Drain the bridge subprocess so node can quit.
-  // Bounded so a wedged bridge can't keep us alive forever.
   await Promise.race([
     teardownActiveBridge(),
     new Promise<void>((r) => setTimeout(r, 6000)),

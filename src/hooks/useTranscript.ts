@@ -126,17 +126,6 @@ export function useTranscript() {
     setItems([]);
   }, []);
 
-  // Legacy shims kept until ReplMode/OneShotMode/TranscriptItemView are
-  // deleted in T10. These are no-ops on the new flat model.
-  const appendToolCall = useCallback(
-    (_assistantId: string, _call: unknown): void => {},
-    [],
-  );
-  const updateToolCall = useCallback(
-    (_assistantId: string, _invocationId: string, _patch: unknown): void => {},
-    [],
-  );
-
   return {
     items,
     itemsRef,
@@ -149,8 +138,6 @@ export function useTranscript() {
     appendSystem,
     replayMessages,
     clear,
-    appendToolCall,
-    updateToolCall,
   };
 }
 
