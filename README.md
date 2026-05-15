@@ -7,6 +7,29 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
+## v0.6.0 — 流式渲染性能优化 (Phase 14c)
+
+- **delta buffering**：assistant 文本流 50ms / 384 字符触发一次 flush，高频流式输出 re-render 频率约 10x 降低
+- **transcript ops 批量 flush**：tool_call_started / tool_call_completed 也走 50ms ref 队列
+- **`startTransition`** 包裹所有非紧急 transcript 更新，键盘输入永远优先响应
+- **`useDeferredValue`** 包裹 ConversationView items / TodoPanel todos / StatusBar telemetry，React concurrent 标记低优先级
+- 新模块 `src/lib/deltaBuffer.ts`（含 8 个单元测试），timer 接口可注入便于测试
+- **finally drain**：finishAssistant 前先 flush，确保 cursor 落在最后一行文本之后
+
+### Phase 14 永久砍清单（14a/b/c 综合）
+
+以下功能 OpenHarness 有但 oh-tui **不实现**（不会进入未来 phase）：
+
+- **SwarmPanel** + swarm 协议 —— oh-mini 没 multi-agent 后端
+- **permission_mode 系统**（/permissions /plan）—— oh-mini 没有 permission_mode 概念
+- **/vim /voice** —— 无后端
+- **/effort /passes /turns** —— oh-mini 不暴露 reasoning 配置
+- **/output-style codex 模式** —— 无后端
+- **Mcp / Bridge 状态计数** —— 无数据源
+- **shift+enter 多行输入** —— ink-text-input 限制
+- **SidePanel**（32% 宽侧栏 status/tasks/mcp/bridge/commands）—— 数据源缺失或与 StatusBar/Footer/TodoPanel/CommandPicker 冗余
+- **TodoPanel markdown 数据源**（OpenHarness 风格 bridge 直发 `todo_markdown`）—— 跨仓库 oh-mini 协议改动，与"不改 protocol"决策矛盾；当前 `parseTodos` 方案等价
+
 ## v0.5.0 — CommandPicker + 键位对齐 (Phase 14b)
 
 - **CommandPicker**：输入 `/` 浮出补全菜单，↑↓ 选择、Tab 补全、Enter 提交、Esc 关闭
@@ -18,28 +41,6 @@
 - **PromptInput 重构**：value/onChange/onSubmit 受控；↑↓ history 移到 App.tsx
 - **键位集中化**：App.tsx 单个 useInput 处理所有全局键位，互斥优先级清晰
 - 删除 `src/hooks/useKeybinds.ts`（合并入 App.tsx）
-
-### BREAKING UX
-
-`Ctrl+C` 在 idle 时**单击退出**（不再有 "press Ctrl+C again to exit" 二段保护）。
-
-### 手工 smoke checklist（合并前验证）
-
-```bash
-pnpm start                       # 启动 REPL
-```
-
-逐条：
-1. 输入 `/` → CommandPicker 浮出
-2. ↑↓ 在 picker 内移动选中态
-3. Tab 在 picker → 补全选中项到 input
-4. Enter 在 picker → 提交选中项
-5. Esc 在 picker → 清空 input
-6. 普通输入下 ↑↓ 走 history（draft 保护）
-7. 输入非空时 Esc 双击 500ms 内清空
-8. `/theme` 触发 SelectModal，选 `dark` → 配色立刻变蓝紫
-9. modal 内数字 1/2/3 直接快选
-10. Ctrl+C busy → cancel；Ctrl+C idle → exit
 
 ## v0.4.0 — OpenHarness 1:1 visual refresh (Phase 14a)
 

@@ -46,7 +46,7 @@ import { messagesToTranscript } from "./lib/replay.js";
 import { ThemeProvider, useTheme } from "./theme/ThemeContext.js";
 import type { CliArgs } from "./types.js";
 
-const VERSION = "0.4.0";
+const VERSION = "0.6.0";
 const EXIT_HOLD_MS = 100;
 const ASSISTANT_DELTA_FLUSH_MS = 50;
 const ASSISTANT_DELTA_FLUSH_CHARS = 384;
