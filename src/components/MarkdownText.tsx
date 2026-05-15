@@ -15,6 +15,7 @@
 import type React from "react";
 import { Box, Text } from "ink";
 import { tokenize, type Token, type InlineToken } from "../lib/markdown.js";
+import { useTheme } from "../theme/ThemeContext.js";
 
 export interface MarkdownTextProps {
   source: string;
@@ -38,9 +39,14 @@ export function MarkdownText({
 }
 
 function BlockRender({ tok }: { tok: Token }): React.JSX.Element {
+  const { theme } = useTheme();
   if (tok.type === "heading") {
     const color =
-      tok.level === 1 ? "magenta" : tok.level === 2 ? "cyan" : "yellow";
+      tok.level === 1
+        ? theme.colors.accent
+        : tok.level === 2
+          ? theme.colors.primary
+          : theme.colors.warning;
     return (
       <Box marginTop={1}>
         <Text bold color={color}>
@@ -66,7 +72,7 @@ function BlockRender({ tok }: { tok: Token }): React.JSX.Element {
   if (tok.type === "list_item") {
     return (
       <Box>
-        <Text color="cyan">{tok.marker} </Text>
+        <Text color={theme.colors.primary}>{tok.marker} </Text>
         <InlineRender tokens={tok.text} />
       </Box>
     );
@@ -74,7 +80,7 @@ function BlockRender({ tok }: { tok: Token }): React.JSX.Element {
   if (tok.type === "blockquote") {
     return (
       <Box>
-        <Text color="cyan">▎ </Text>
+        <Text color={theme.colors.primary}>▎ </Text>
         <InlineRender tokens={tok.text} />
       </Box>
     );

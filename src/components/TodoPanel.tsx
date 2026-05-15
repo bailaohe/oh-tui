@@ -19,6 +19,7 @@
 
 import type React from "react";
 import { Box, Text } from "ink";
+import { useTheme } from "../theme/ThemeContext.js";
 
 export interface TodoItem {
   content: string;
@@ -42,11 +43,12 @@ const COLOR: Record<TodoItem["status"], "gray" | "yellow" | "green"> = {
 };
 
 export function TodoPanel({ todos }: TodoPanelProps): React.JSX.Element {
+  const { theme } = useTheme();
   return (
     <Box
       flexDirection="column"
       borderStyle="single"
-      borderColor="cyan"
+      borderColor={theme.colors.primary}
       paddingX={1}
       marginY={1}
     >
