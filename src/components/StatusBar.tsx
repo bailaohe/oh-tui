@@ -1,17 +1,14 @@
 /**
- * StatusBar — two-row footer pinned at the bottom of the REPL.
+ * StatusBar — OpenHarness 风格分隔符行。
  *
- * Row 1: a horizontal rule (─) so the bar visually separates from the prompt.
- * Row 2: left = provider/model · sess · yolo · profile; right = cancel hint /
- *        telemetry pulse / "idle".
- *
- * Layout: the outer Box is `width="100%"` so `justifyContent="space-between"`
- * actually spreads to the terminal edges (Ink's default Box width is shrink-
- * to-content, which silently collapses the gap on small terminals).
+ * 顶部一条 ── 分隔线；下方一行用 │ 分段显示：
+ *   model: X │ tokens: 1.2k↓ 3.4k↑ │ mode: yolo │ sess a1b2c3d4 │ [cancel hint]
+ * 各段只在数据存在时显示。
  */
 
 import type React from "react";
 import { Box, Text } from "ink";
+import { useTheme } from "../theme/ThemeContext.js";
 
 export interface StatusBarProps {
   provider: string | null;
@@ -19,9 +16,14 @@ export interface StatusBarProps {
   profile?: string | null;
   sessionIdShort: string | null;
   yolo: boolean;
-  telemetry: { event_type: string; elapsed_ms: number } | null;
+  /** Token counters from telemetry, if available. */
+  tokens?: { input: number; output: number } | null;
+  /** Legacy: telemetry pulse string surfacing event_type + duration. */
+  telemetry?: { event_type: string; elapsed_ms: number } | null;
   cancelHint?: string | null;
 }
+
+const SEP = " │ ";
 
 export function StatusBar({
   provider,
@@ -29,35 +31,89 @@ export function StatusBar({
   profile,
   sessionIdShort,
   yolo,
+  tokens,
   telemetry,
   cancelHint,
 }: StatusBarProps): React.JSX.Element {
-  const left: string[] = [];
-  if (provider !== null) {
-    left.push(provider + (model !== null ? `/${model}` : ""));
-  } else {
-    left.push("(no provider)");
-  }
-  if (sessionIdShort !== null) left.push(`sess ${sessionIdShort}`);
-  if (profile !== null && profile !== undefined && profile !== "default") {
-    left.push(`@${profile}`);
-  }
-  if (yolo) left.push("yolo");
+  const { theme } = useTheme();
 
-  const right =
-    cancelHint !== null && cancelHint !== undefined
-      ? cancelHint
-      : telemetry !== null
-        ? `${telemetry.event_type} · ${telemetry.elapsed_ms}ms`
-        : "idle";
+  const segments: React.ReactNode[] = [];
+
+  // model + provider
+  const modelLabel = model ?? "unknown";
+  const providerLabel = provider ?? "unknown";
+  segments.push(
+    <Text key="model" color={theme.colors.primary} dimColor>
+      model: {modelLabel}
+    </Text>,
+  );
+  segments.push(
+    <Text key="provider" dimColor>
+      provider: {providerLabel}
+    </Text>,
+  );
+
+  if (tokens !== null && tokens !== undefined && (tokens.input > 0 || tokens.output > 0)) {
+    segments.push(
+      <Text key="tokens" dimColor>
+        tokens: {formatNum(tokens.input)}↓ {formatNum(tokens.output)}↑
+      </Text>,
+    );
+  }
+
+  if (yolo) {
+    segments.push(
+      <Text key="mode" dimColor>
+        mode: yolo
+      </Text>,
+    );
+  }
+
+  if (profile !== null && profile !== undefined && profile !== "default") {
+    segments.push(
+      <Text key="profile" dimColor>
+        @{profile}
+      </Text>,
+    );
+  }
+
+  if (sessionIdShort !== null) {
+    segments.push(
+      <Text key="sess" dimColor>
+        sess {sessionIdShort}
+      </Text>,
+    );
+  }
+
+  if (cancelHint !== null && cancelHint !== undefined) {
+    segments.push(
+      <Text key="hint" color={theme.colors.warning}>
+        {cancelHint}
+      </Text>,
+    );
+  } else if (telemetry !== null && telemetry !== undefined) {
+    segments.push(
+      <Text key="telemetry" dimColor>
+        {telemetry.event_type} · {telemetry.elapsed_ms}ms
+      </Text>,
+    );
+  }
 
   return (
     <Box flexDirection="column" width="100%">
       <Text dimColor>{"─".repeat(60)}</Text>
-      <Box width="100%" justifyContent="space-between">
-        <Text color="cyan">{left.join(" │ ")}</Text>
-        <Text dimColor>{right}</Text>
+      <Box>
+        <Text>
+          {segments.flatMap((seg, i) =>
+            i === 0 ? [seg] : [<Text key={`s${i}`} dimColor>{SEP}</Text>, seg],
+          )}
+        </Text>
       </Box>
     </Box>
   );
+}
+
+function formatNum(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
 }
