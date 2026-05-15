@@ -1,95 +1,43 @@
 /**
- * PromptInput — single-line editable input for the REPL with ↑/↓ history.
+ * PromptInput — controlled single-line input.
  *
- * Renders a cyan `oh> ` prefix followed by an `ink-text-input` field. On
- * Enter, the current value is handed to the parent via `onSubmit` and the
- * buffer is cleared. The parent owns the `history` array (past prompts in
- * submission order) and threads it back in via the prop.
+ * After Phase 14b, App.tsx owns all editor state (value, history, picker,
+ * Esc-double-tap) and PromptInput is a pure render component that wraps
+ * ink-text-input. ↑/↓ history navigation lives in App.tsx's central
+ * useInput handler.
  *
- * History navigation semantics:
- *   - `historyIdx === history.length` means "at draft" (user's current input).
- *   - ↑ moves backwards through history; when we leave the draft slot, the
- *     current `value` is saved into `draft` so we can restore it later.
- *   - ↓ past the last item restores `draft`.
- *   - Editing (via `onChange`) while inside history snaps `historyIdx` back to
- *     the draft slot — feels natural: as soon as you tweak a recalled prompt,
- *     it becomes "your draft" and a subsequent ↓ won't blow it away.
- *
- * Ink dispatch order matters here: `useInput` handlers run BEFORE keystrokes
- * are delegated to children, so our ↑/↓ interception fires before
- * `ink-text-input` would otherwise consume the arrows for in-line cursor
- * movement.
+ * When `suppressSubmit` is true, Enter is swallowed — App.tsx is handling
+ * Enter for picker selection instead.
  */
 
 import type React from "react";
-import { useState } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text } from "ink";
 import TextInput from "ink-text-input";
+import { useTheme } from "../theme/ThemeContext.js";
 
 export interface PromptInputProps {
-  /** Past prompts in submission order. Used for ↑/↓ recall. */
-  history: string[];
-  /** Invoked with the prompt text when the user presses Enter. */
-  onSubmit: (text: string) => void;
-  /** Optional placeholder shown when the input is empty. */
+  value: string;
+  onChange: (v: string) => void;
+  onSubmit: (v: string) => void;
   placeholder?: string;
+  suppressSubmit?: boolean;
 }
 
 export function PromptInput({
-  history,
+  value,
+  onChange,
   onSubmit,
   placeholder,
+  suppressSubmit = false,
 }: PromptInputProps): React.JSX.Element {
-  const [value, setValue] = useState("");
-  const [historyIdx, setHistoryIdx] = useState(history.length);
-  const [draft, setDraft] = useState("");
-
-  useInput((_input, key) => {
-    if (key.upArrow) {
-      if (history.length === 0) return;
-      const newIdx = Math.max(0, historyIdx - 1);
-      if (newIdx === historyIdx) return;
-      // Entering history from the draft slot — preserve current input.
-      if (historyIdx === history.length) setDraft(value);
-      setHistoryIdx(newIdx);
-      setValue(history[newIdx] ?? "");
-    } else if (key.downArrow) {
-      if (historyIdx === history.length) return;
-      const newIdx = historyIdx + 1;
-      setHistoryIdx(newIdx);
-      if (newIdx === history.length) {
-        setValue(draft);
-      } else {
-        setValue(history[newIdx] ?? "");
-      }
-    }
-  });
-
+  const { theme } = useTheme();
   return (
     <Box>
-      <Text color="cyan">oh&gt; </Text>
+      <Text color={theme.colors.primary}>oh&gt; </Text>
       <TextInput
         value={value}
-        onChange={(v) => {
-          setValue(v);
-          // Any direct edit moves us back to the draft slot at the end of the
-          // history list — that's where the new entry will conceptually land.
-          if (historyIdx !== history.length) setHistoryIdx(history.length);
-        }}
-        onSubmit={(submitted) => {
-          // Clear the buffer *before* notifying the parent so that if the
-          // parent triggers a synchronous re-render (e.g. pushing a turn into
-          // scrollback) we don't briefly flash the old value.
-          setValue("");
-          setDraft("");
-          // After submit the parent will likely push `submitted` onto the
-          // history array, growing its length by one. Setting the index to
-          // `history.length + 1` keeps us at the new draft slot on the next
-          // render. (If the parent doesn't push, the next edit will snap us
-          // back via the onChange branch above.)
-          setHistoryIdx(history.length + 1);
-          onSubmit(submitted);
-        }}
+        onChange={onChange}
+        onSubmit={suppressSubmit ? () => {} : onSubmit}
         {...(placeholder !== undefined ? { placeholder } : {})}
       />
     </Box>

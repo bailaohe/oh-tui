@@ -1,55 +1,78 @@
 import { describe, it, expect } from "vitest";
 import { render } from "ink-testing-library";
 import { PromptInput } from "../../src/components/PromptInput.js";
-
-// CSI escape sequences for arrow keys. ink-testing-library's `stdin.write`
-// feeds raw bytes into Ink's input parser, which understands the same CSI
-// sequences a real terminal emits: ESC + [ + A/B = up/down. Without the
-// leading ESC byte Ink would treat the input as two literal characters.
-const UP = "\x1B[A";
-const DOWN = "\x1B[B";
+import { ThemeProvider } from "../../src/theme/ThemeContext.js";
 
 /**
  * Yield to the event loop so React effects (including ink-text-input's
  * `useInput` registration) flush before we write or assert. Without this the
- * very first `stdin.write` after `render()` lands before Ink has subscribed
- * to the stdin stream and is silently dropped.
+ * `stdin.write` lands before Ink has subscribed to the stdin stream.
  */
 const flush = async (ms = 30): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
-describe("PromptInput", () => {
-  it("renders the prompt prefix and an empty input by default", () => {
+describe("PromptInput (controlled)", () => {
+  it("renders the cyan oh> prefix and the current value", () => {
     const { lastFrame } = render(
-      <PromptInput history={[]} onSubmit={() => {}} />,
+      <ThemeProvider>
+        <PromptInput value="hello" onChange={() => {}} onSubmit={() => {}} />
+      </ThemeProvider>,
     );
-    expect(lastFrame()).toContain("oh>");
+    const f = lastFrame() ?? "";
+    expect(f).toContain("oh>");
+    expect(f).toContain("hello");
   });
 
-  it("up arrow recalls the most recent history entry", async () => {
-    const history = ["first", "second", "third"];
-    const { lastFrame, stdin } = render(
-      <PromptInput history={history} onSubmit={() => {}} />,
+  it("invokes onChange when stdin types a character", async () => {
+    const observed: string[] = [];
+    const { stdin } = render(
+      <ThemeProvider>
+        <PromptInput
+          value=""
+          onChange={(v) => observed.push(v)}
+          onSubmit={() => {}}
+        />
+      </ThemeProvider>,
     );
-    await flush(); // let useInput effect register
-    stdin.write(UP);
     await flush();
-    expect(lastFrame()).toContain("third");
+    stdin.write("a");
+    expect(observed).toContain("a");
   });
 
-  it("down arrow past the end restores the draft", async () => {
-    const { lastFrame, stdin } = render(
-      <PromptInput history={["one"]} onSubmit={() => {}} />,
+  it("invokes onSubmit on Enter when suppressSubmit is false", async () => {
+    let submitted: string | null = null;
+    const { stdin } = render(
+      <ThemeProvider>
+        <PromptInput
+          value="x"
+          onChange={() => {}}
+          onSubmit={(v) => {
+            submitted = v;
+          }}
+        />
+      </ThemeProvider>,
     );
     await flush();
-    // Type "hi" into the draft slot, navigate up into history, then back down
-    // past the end — we should land back on "hi".
-    stdin.write("hi");
+    stdin.write("\r");
+    expect(submitted).toBe("x");
+  });
+
+  it("swallows Enter when suppressSubmit is true", async () => {
+    let submitted: string | null = null;
+    const { stdin } = render(
+      <ThemeProvider>
+        <PromptInput
+          value="x"
+          onChange={() => {}}
+          onSubmit={(v) => {
+            submitted = v;
+          }}
+          suppressSubmit={true}
+        />
+      </ThemeProvider>,
+    );
     await flush();
-    stdin.write(UP);
-    await flush();
-    stdin.write(DOWN);
-    await flush();
-    expect(lastFrame()).toContain("hi");
+    stdin.write("\r");
+    expect(submitted).toBeNull();
   });
 });
